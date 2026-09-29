@@ -1,0 +1,58 @@
+name: host tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  m0-uapi-hinge:
+    name: unetd drives wireguard-go over UAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build libjson-c-dev
+
+      # The runner kernel has IPv6, unlike some dev containers, so unetd's
+      # AF_INET6 global PEX socket can actually bind here.
+      - name: Report IPv6 availability
+        run: |
+          python3 - <<'PY'
+          import socket
+          try:
+              socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).close()
+              print("AF_INET6: available")
+          except OSError as e:
+              print("AF_INET6: UNAVAILABLE ->", e)
+          PY
+
+      - name: Apply the Android patch series
+        run: ./scripts/apply-patches.sh
+
+      - name: Build unetd (Android configuration) and wireguard-go
+        run: ./scripts/build-host.sh
+
+      - name: M0 - UAPI hinge
+        run: |
+          sudo ./tests/host/m0-uapi-hinge.sh \
+            build/host/unetd third_party/unetd build/host/wireguard-go
+
+      - name: M0 - same, with CAP_NET_RAW dropped
+        # Proves the raw-socket degradation patch: an unprivileged Android app
+        # can never get CAP_NET_RAW, so unetd must still configure WireGuard
+        # without it. Unpatched, pex_open() bails and pex_socket() returns fd 0.
+        run: |
+          sudo apt-get install -y -qq libcap2-bin
+          sudo capsh --drop=cap_net_raw --caps="cap_net_admin+eip cap_setpcap,cap_setuid,cap_setgid+ep" \
+            --keep=1 --user=root --addamb=cap_net_admin -- \
+            -c './tests/host/m0-uapi-hinge.sh build/host/unetd third_party/unetd build/host/wireguard-go'

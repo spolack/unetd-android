@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Tue, 29 Sep 2026 10:31:10 +0000
+Subject: [PATCH] portability: use __linux__ and include <endian.h> explicitly
+
+The bare `linux` macro is only predefined in GNU mode, so the affected blocks
+silently vanish under -std=c99. Use the standard __linux__ spelling.
+
+utils.c tests __BYTE_ORDER against __LITTLE_ENDIAN without including
+<endian.h>. If neither macro is defined the comparison evaluates 0 == 0 and
+silently selects the little-endian path. Include the header and fail loudly
+instead.
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ pex-msg.c | 2 +-
+ pex.c     | 2 +-
+ utils.c   | 4 ++++
+ 3 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index d372442..872e148 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -636,7 +636,7 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ 		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+ 		setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &yes, sizeof(yes));
+ 
+-#ifdef linux
++#ifdef __linux__
+ 		pex_raw_v6_fd = fd = socket(PF_INET6, SOCK_RAW, IPPROTO_UDP);
+ 		if (fd < 0)
+ 			goto close_raw;
+diff --git a/pex.c b/pex.c
+index 35f66bf..9108bb7 100644
+--- a/pex.c
++++ b/pex.c
+@@ -957,7 +957,7 @@ int network_pex_open(struct network *net)
+ 
+ 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+ 	setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+-#ifdef linux
++#ifdef __linux__
+ 	setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE,
+ 		   network_name(net), strlen(network_name(net)));
+ #endif
+diff --git a/utils.c b/utils.c
+index 8cf4960..ea8b676 100644
+--- a/utils.c
++++ b/utils.c
+@@ -3,6 +3,10 @@
+  * Copyright (C) 2022 Felix Fietkau <nbd@nbd.name>
+  */
+ #include <sys/types.h>
++#include <endian.h>
++#if !defined(__BYTE_ORDER) || !defined(__LITTLE_ENDIAN)
++#error "Unable to determine endianness."
++#endif
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+ #include <arpa/inet.h>

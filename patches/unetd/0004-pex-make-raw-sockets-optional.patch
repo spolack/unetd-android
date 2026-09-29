@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Tue, 29 Sep 2026 10:31:11 +0000
+Subject: [PATCH] pex: make raw sockets optional
+
+pex_open() returns -1 if it cannot create a raw socket, which takes the entire
+global PEX subsystem down with it: no network data updates, no endpoint notify,
+no enrollment, no DHT relay. Raw sockets need CAP_NET_RAW, which an
+unprivileged Android app cannot obtain, so that is a permanent failure there
+rather than an edge case.
+
+Degrade instead. Only the spoofed-source-port NAT punch and the STUN query from
+the WireGuard port depend on raw sockets; STUN falls back to the PEX socket and
+everything else is unaffected. pex_raw_socket() already returns -1 when unset
+and __pex_msg_send() already handles that, so only the unguarded call in
+pex-stun.c needs a check.
+
+Also initialise pex_fd/pex_unix_fd to -1. As static storage they defaulted to
+0, so after a failed pex_open() the pex_socket() accessor returned fd 0 and
+callers wrote datagrams to stdin.
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ pex-msg.c  | 30 ++++++++++++++++++------------
+ pex-stun.c |  7 ++++++-
+ 2 files changed, 24 insertions(+), 13 deletions(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index 872e148..378d948 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -24,7 +24,7 @@
+ static char pex_tx_buf_storage[PEX_BUF_SIZE + 4] __attribute__((aligned(8)));
+ static char * const pex_tx_buf = pex_tx_buf_storage + 4;
+ static FILE *pex_urandom;
+-static struct uloop_fd pex_fd, pex_unix_fd;
++static struct uloop_fd pex_fd = { .fd = -1 }, pex_unix_fd = { .fd = -1 };
+ static LIST_HEAD(requests);
+ static struct uloop_timeout gc_timer;
+ static int pex_raw_v4_fd = -1, pex_raw_v6_fd = -1;
+@@ -629,21 +629,27 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ 	pex_recv_cb = cb;
+ 
+ 	if (server) {
++		/*
++		 * Raw sockets require CAP_NET_RAW. Where that is unavailable (an
++		 * unprivileged Android app, a container without the capability),
++		 * continue without them: only the spoofed-source-port NAT punch
++		 * degrades, while bootstrap, network data updates and enrollment
++		 * keep working. pex_raw_socket() returns -1 when unset and
++		 * __pex_msg_send() already handles that.
++		 */
+ 		pex_raw_v4_fd = fd = socket(PF_INET, SOCK_RAW, IPPROTO_UDP);
+-		if (fd < 0)
+-			return -1;
+-
+-		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+-		setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &yes, sizeof(yes));
++		if (fd >= 0) {
++			setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
++			setsockopt(fd, IPPROTO_IP, IP_HDRINCL, &yes, sizeof(yes));
++		}
+ 
+ #ifdef __linux__
+ 		pex_raw_v6_fd = fd = socket(PF_INET6, SOCK_RAW, IPPROTO_UDP);
+-		if (fd < 0)
+-			goto close_raw;
+-
+-		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+-		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no));
+-		setsockopt(fd, IPPROTO_IPV6, IPV6_HDRINCL, &yes, sizeof(yes));
++		if (fd >= 0) {
++			setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
++			setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no));
++			setsockopt(fd, IPPROTO_IPV6, IPV6_HDRINCL, &yes, sizeof(yes));
++		}
+ #endif
+ 	}
+ 
+diff --git a/pex-stun.c b/pex-stun.c
+index 478465f..210cf4b 100644
+--- a/pex-stun.c
++++ b/pex-stun.c
+@@ -153,7 +153,12 @@ retry:
+ 	s->req_auth_port = false;
+ 	if (stun->wgport_disabled) {
+ 		ret = sendto(stun->socket.fd, msg, len, 0, &ep.sa, sizeof(ep.in));
+-	} else if (!stun->auth_port_ext) {
++	} else if (!stun->auth_port_ext || pex_raw_socket(AF_INET) < 0) {
++		/*
++		 * Without a raw socket the WireGuard source port cannot be
++		 * forged, so query from the PEX socket instead. That discovers
++		 * the PEX port external mapping rather than the WireGuard one.
++		 */
+ 		s->req_auth_port = true;
+ 		ret = sendto(pex_socket(), msg, len, 0, &ep.sa, sizeof(ep.in));
+ 	} else {

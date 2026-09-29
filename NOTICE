@@ -1,0 +1,27 @@
+unetd-android
+Copyright (C) 2026 the unetd-android authors
+
+This product combines work from the following upstream projects:
+
+  unetd              https://github.com/openwrt/unetd
+                     Copyright (C) 2022 Felix Fietkau <nbd@nbd.name>
+                     GPL-2.0-or-later
+
+  libubox            https://github.com/openwrt/libubox
+                     ISC
+
+  wireguard-go       https://git.zx2c4.com/wireguard-go
+                     Copyright (C) 2017-2025 WireGuard LLC
+                     MIT
+
+  wireguard-android  https://git.zx2c4.com/wireguard-android
+                     Copyright (C) 2017-2025 WireGuard LLC
+                     Apache-2.0
+
+  json-c             https://github.com/json-c/json-c
+                     MIT
+
+Apache-2.0 is one-way compatible with GPLv3 but not with GPLv2, so the
+combined work is distributed under GPL-3.0-or-later. See LICENSE.
+
+"WireGuard" is a registered trademark of Jason A. Donenfeld.

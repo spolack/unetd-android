@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Tue, 29 Sep 2026 10:31:10 +0000
+Subject: [PATCH] build: make -Werror and the kernel WireGuard backend optional
+
+Android apps cannot use the kernel WireGuard backend: WG_CMD_SET_DEVICE over
+generic netlink needs CAP_NET_ADMIN, which an unprivileged app never has. Add
+WG_LINUX_SUPPORT so wg-linux.c and its libnl-tiny dependency can be dropped,
+leaving only the portable userspace UAPI backend.
+
+Also make -Werror opt-out. GCC 13 and NDK clang both emit warnings that the
+upstream GCC baseline does not, and a hard -Werror makes the tree unbuildable
+on those toolchains.
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ CMakeLists.txt                    |  18 +++++++++++++++---
+ __pycache__/edits.cpython-311.pyc | Bin 0 -> 11336 bytes
+ wg.c                              |   2 +-
+ wg.h                              |   2 ++
+ 4 files changed, 18 insertions(+), 4 deletions(-)
+ create mode 100644 __pycache__/edits.cpython-311.pyc
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2e58bb7..c2f9084 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,17 +11,29 @@ SET(SOURCES
+ 
+ SET(RUNSTATEDIR /var/run)
+ 
+-ADD_DEFINITIONS(-Os -Wall -Werror --std=gnu99 -g3 -Wmissing-declarations -DRUNSTATEDIR="${RUNSTATEDIR}")
++OPTION(WERROR "treat compiler warnings as errors" ON)
++IF(WERROR)
++	SET(WERROR_FLAG -Werror)
++ELSE()
++	SET(WERROR_FLAG "")
++ENDIF()
++
++ADD_DEFINITIONS(-Os -Wall ${WERROR_FLAG} --std=gnu99 -g3 -Wmissing-declarations -DRUNSTATEDIR="${RUNSTATEDIR}")
+ FIND_LIBRARY(libjson NAMES json-c json)
+ 
+ OPTION(UBUS_SUPPORT "enable ubus support" ON)
+ OPTION(VXLAN_SUPPORT "enable VXLAN support" ON)
+-IF(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++OPTION(WG_LINUX_SUPPORT "enable the kernel WireGuard (netlink) backend" ON)
++IF(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
++	SET(WG_LINUX_SUPPORT OFF)
++	SET(VXLAN_SUPPORT OFF)
++ENDIF()
++IF(WG_LINUX_SUPPORT)
+ 	FIND_LIBRARY(nl nl-tiny)
+ 	SET(SOURCES ${SOURCES} wg-linux.c)
++	ADD_DEFINITIONS(-DWG_LINUX_SUPPORT)
+ ELSE()
+ 	SET(nl "")
+-	SET(VXLAN_SUPPORT OFF)
+ ENDIF()
+ IF(VXLAN_SUPPORT)
+ 	find_library(bpf NAMES bpf)
+diff --git a/__pycache__/edits.cpython-311.pyc b/__pycache__/edits.cpython-311.pyc
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac47ade6b7fb8c530b963bfba9d8e5a18c97a214
+GIT binary patch
+literal 11336
+zcmcgy+ix3Jdgoo__!4bwcat;?j+ta5IwEByj$=!f0Y;P@ZDdj<Dcebk%nmt+<W$2M
+z?p!2`ws+Ga3wVn~8+0GCZBR5%X%^{2-uoByrH~f^Y6xBQq3FXtl}4JEJoWdTxsa4)
+z+1_kQTZf#PbG~!VcmIB8{^`gODT0sj%YXUvk8_d8f6+zonecyn^$vb~6j3AZMAYa9
+zk$0kM3~fw}qm8Qxv<WqdHmRo2rg%)9P}8kAkE<C~!goSFq#nk1Qaz#`#dk`5LY-{I
+z+sSt()bG_IxhMOtS1grVTxDF<9M-l>w`a4KX)&k6nQL%IWko}^Oig7y#c6h!%`J`F
+zg=RchE52#Dbp6!;%|{U@iZB0jGx8~}J`eAF68;K$(D$eK`#ijHD}FP2Grk$IpZX!T
+zeKYcLM2+2ysu4B*v)I#Nua9H@kQg8Lm(lT=)x@VU(8Ztk`6T=m+@bHA@lQtg5<bEj
+zVrueJJo`L+KE9VI1Oq0f%KandN}VlN*2^WP8LS_hW4~Jlq21`#?`Xfd#BRduabq`O
+zaYfxtZdsbccPA{~)0HNtr{Ha8H*V_cZrtEoyHVRtU>w8eo7Rle?aefG#Z`I!^h~~E
+zc6r`~81h0qdBqdY%<TDBTd%yPp3R@0eO=AJc7FD3zH#o1lIO3y(m2~Xe}4A0*U!w@
+zO^c-1Q`8wxkTWEAyU^R-joWU+dIGc3ZfzIM`;p(K58tl;T>6FdH&6W46L->2f0=&z
+z{o>t2M?XAy`yBn-IdT4zIvV`{toFsRFS1`8`{!%k_0P}!0v&#vNZ&qw+y0Bn2bF(M
+zJpG%*)4w|TkGa3keX{u3vCot{&z%19nbUU?vtK4=cY^<4Vd6-Wn&6Yf4_eb#e~o5b
+zyHps28XuQYbWH!y1154{j}#frfjwYM>Y=?ogzOKO`$rcqD;s=Ov%yB^y3_9zOC`Cq
+zw7gPYsjpPZwW)l?X8Eg%uA}9a1>4H!ZAV>b8}9k@EZ=?=_q&>HYeqY-atInC(o6$`
+zO4apptzN7zl~$??*%xk%T;9s&`u|f|qZy{IE>)|QD$6?1E{8SEZco#>#kLg708N`I
+zHWTyOSyn0Mq?KiVL{7@omg@e6yu4bx6s#~OEv?p;ruONO&Ei?P1R6O>dhkwPxZy2I
+zP`&ks+VDr1cJXrYttGkkcCEg2SuPhZFR@y^y7Z^(#Z{JF)eQGK7MKC^OY-W<8`Wa<
+z?I}ZNhMspcW82?Pt+HNST&l4bZuq}$v8{Gqr@@8h_|`F&b}aaG<=SeoEZ5f8)+*IH
+zt1K^voKQ-z@<14uFmZYPTG%nm4W*%T;ZQfYWpJHc)hvF=RV<ZF!NX$WjT~zz%?)m-
+zp@_(%Jknl;2=`7ZR`-xq3q{y7@Z0h(bDv6-uHHArsBZZT_EoB%*lHJ=eLJJI*wj{A
+zCO0RWJ%pPMZ*CB?a#&%;;*M(>><1$~<|XNQt)=o76LOSB`-nS4W?p)p>oyM`me*HT
+z>7Jo#t^QBG&7^xb8BRfKe5Comp{;lNYy7$cC4m(iw!>`4a+?mclU7e(0Ym1cgZmAq
+z?3)Mo98&c8ci&bH9zUGPXXLM=B8vPvVokzdTSw9CrrWb}!_{=vI)TeH{_MX)g8-A5
+z*hxQiH*F1Ku}nXDFPTW*i2iSc+JR`lmLkbCx(s5Gj2@$2?HKjy#Hd#%M!h;Q(d%}K
+zI{grxBAIn`iY2e06SV`;ew_lT+o`+hckiZe(&L|CCTi*Ncq^8^e-P5K?#B*7iHC+M
+zWN_-lz9A-E?k9U3o~eI$RKxp|{*~<Om;6lz-SS<VENH@YG#zHs|D)$Mqp2fxU>EFd
+zd&b%BA$jXu?Emfl_hCdqcd`n_KwmN}b`qwg8C;!`<u~50FUgf^X{nlHH*bzUSzW2u
+zSC?cm<{|>k^Io*euKNzqWGaVpcR`1F)D3Rig{-eQ)-kZwI!?_{bB?xOk$a})C=E^5
+zoNenVJbng$b{&n-pW723KDTr7)jNqZUnb7%B+fvkZXf#ay`2|dzmqukW#ZgU0$Iq!
+z?aa=xmj|(E#);mG$C9oPy(>gN-X0+ODNOk&q8FJ#qTJ8GUu~Jz2E_0g{mx(1z(bW^
+zXA4Yg$%fM9jwx=CXQQ6tp6BM~CE<@wj*iQ*8}NRuo~0R1YYI687(C6gi>9lq%rKF^
+za|e{YIVg$u$+8#iKQpq^!R7cYfv3#RV#-^}e<GCq!4~VQ=vd_ZZg=22_{_{H%)?Hx
+zilJ|d&@0wJ)yt;V<ifqWU2YRgLa`LsnyxtDTNl2zgR00QL6y)jVyj#b=pd;wOlEQ0
+z)Hg+Z2PHgXBvm%W3+)0^439uiKwaq>HGh7`HFB)$3Ky>-Gi-3?B?%^$=rFg(lt5Yq
+zL1YGPNiHK@!#t2V<{lL^6oOkV6cf|5HRL)jGC#JZIUUo5N;uhE5a%G{eGN@&zbg9_
+zEi$l^WMs3UksTth`cwGUWab^X>51gKupnv&_q7LD(C_6uf6okFSYf7YeII-1zic~5
+zs+&PTb#>G1$t~2h{5rm-#kXr{bTQvwIj}Q~_XaCq>;lWrvRh+g_dJ_dCQ))`$S=#5
+zvL$bxp*a_rXlxS+pEI?#EU!SU)2vomd`qqtuTHa-wY6%cUXj;JYY<yT_yG*Lz)n;0
+zGitB6gt`zVv*%3FMrxH+nJ9S_<u|I8Vrj8h1N|Rtb9<WETA!P(Dg4d}+IxlvQ?IPi
+zGUPW))s^z%>i&a+gewd{SWURovk%<q*~i#w+jLCU)J>Zc|B&N-cl*79b*-#jIV)c|
+zTPd%;jV&8y$S%Wt2)Dw~2Xf5IG?fof&1OOmRaLf_rwcaR$&X#l;%u?FMz&7sP+(Wd
+z6~Tw0w$p52GRmf+>B3t~1s=vV5EC|0^|gWI1nx%Z^`_xQ$R8*OxhM#IcR&uUsr3Ai
+znwth!;VFH;!AHAw=a?BdP`hWEEw1Km)3usBPeGZLi*?p>jb_Iqq4Kt+sHA3F9V~`5
+zOw&OMt6&{LBvKVefqTOjoG+jYBm$PH>s@X*9*qsodyHZs99TivC0UMdEIDw9Qh(IO
+zv*e-;u!H<12zjGrnKTeNkZdEvn94ClC&*=+b<jn}l*GoNM-A2WTN&oX1z4sC&EM7<
+z_l|!YbIfFJg*DK3V3PkIn+&b!ARBxzkHX;x8X@t?FZm?MA5e^IAVYgUbBj@Nh_K40
+zPSVZ%Ma6YGBKwq419=j*^A};Ha`*(^95oszHx1Rq73rO0PLXB>N;}P<kkd@(#xy$(
+z$HIFBTM2y&t~3MgMbRnqddMOu;SQA6CtvgeNKV8Dp@l*2bJe$Zg~5b;A0u+1VK(C#
+zGZV(#R1C@?8-Ch@JP6(d%QV@KU2bi&mSuLu@U^9D0W}R(D(tJk>g1kO&2E~T+_F7m
+zBtJua1$D2ARCLybU!vp$C>I<X8KkjiQKrF%Ci>km`~hju845MTTkBb54lh$0WDnDz
+zofB`|P1o+lqset7K-3OI``=V`3}T54ZXis(7rl36GAW}AwFA+9ou&HoFeOq|BvOft
+zjzlVz?4lF3gZtV85~<%{MUPU7i~{110EI^Pt3t<Ur0HZ~Z=E{U11ApZk%#m+sy?x|
+zhe+2ZQ8WRHBTND&dFgqt==4&fwPO8EHiCe%?93KoWt(uc8Pt%YeQWE>%PZGdwm@>s
+zDn(>r2RxS~SPUXy3FMlN303a^i6<Q;4W`A|J*3tnMZkJ-Z6yfW1y+H|Tbe3Dvf>aW
+z%S8^3I-tRu3dRdMy4e)CE(LM2GezH0wh;rF07igMqQ5|W6vOcf2%-ez7>VaE*$CXg
+z!eD9sQbnl6v5ca_PB#@gn}LI{!a=lprm49Ch|NfXK5KRqi=7J4B+re=pa}2v0RCo?
+zdihB)Dvc0`qM<S!T}*i-8*a;UYckx3+meOH^D(R-0XT&pISF+v5rWI4q|W!8l*CYB
+zE69Z7voG2+F9Nz2`LQQhY}$vyhKm<j3>}!TAlDc#bIGmKJjkNSiB3@>EIT>6h0x~D
+zHUchEIUJ&Rr{|?x{VkD*+rcUoRkaGXYX}B}-hAwC&QEoP>S7;zHsP~mWSv2dk5v)C
+z*@9I0eE-TAGC5@W*jx`>0r7i(x<B2^_(vls1o6mQLS!6aJuz4$^(af{`|tS+7?q}{
+zPmi_|+S&p1tta6n`!5}gUy^|cY`9+@>-Zoec^L9Kq?hU<?S>nh^OE5y7zr#45DnF8
+ziq&o+JGa`KDCSFZYG=-!yF6E(Tbs+~a_l74mPk1I7anhHZG3bglW8h&KQFm2&4KY5
+zQQ>+fgOy+zn4dD2Oan>s#(ZB5`q#YvqjKSn?;`FS1_F;W%LBshYa(5O7qXs%)Gp!A
+z{x>up#CPa!x;ltWAh_O3W|CJBF{vGh_Uq#mRs}w>9J`xV3E6F-2epLkwxS;JD|)P<
+zhe17hqDN2k==nWTJCo<{rr)OEPUr@;6x`p9QgBc2JXyZ`<QhG!iicJ4uo^sE1-N+Z
+zvH%y$f_7QZ9&bfN?=J|CKZi_cg9j&Wq86fXbKen>e=tPi!l|I5EB}f-aU>>CNDzrz
+z5NIAmVU7XXU%XtBabko6$}202ON_ELsm)Ox0vv%k0nOjQH&^Yj1}&B@uav_uLlxIZ
+zt%+O?-9ZEemR(>)Rh9OhA5a20JYEy~#ECPGX&U~i98h7LjjP;fZqrr}G#Oqv==G3%
+zN;+3IDG-NMsD}lkwj?|A!m<d)K9>qOl%z;F##(SL4}Vi&mlhY<?5ko4<<eUK78H<f
+zm`;cBF5Z3!4@^a^4Pi)l8G;T~yJBPmrUd?AbtVCaCSW)el?dPnr)nrinwiQ>1bvIs
+zD-=T5lp9DUCAz>em}8nc{0oxjLjQudBY|$u(XLonym`F3507X3dQaDynxk(k+t7tN
+z=4vQ_2!15aVt$0pH!Z+}w#T&|-tO?QdwMtFQhA+qO%*sHxJ0W|S}i0!fDIZ*P&RDI
+zM&WLNG?EEJvpd)TP-Z3$tefZ07udR=&LAByRNDA(xpt51SV9{@@Q)uDs(i?L^vr-M
+zZQ8hln`6fXA?)BCK!A*N!8;_t5k!Hlw4i6GXRwxVd%?D78+7W8?8gR=`KF?~0$(`I
+z7EqcK8;9G146$ENLO4-ybe{L7q4!%ln8@ch5$&L~!Gt8`7BCm4o35&FOF_}ozu-sk
+zIjDrl=|nF862NZ-IzdE2XqHTbFk>HORi+_35D4LCk{Bguz@=4Bbd7zW>jJ9^kcg}T
+zI_nw+Z{idMd&kQ7b#c~%6mT5K7Lp!Ted8E5)(`^MBY1WL8y!ESKssZ)lxtGfiUOH6
+z>4gJQoo(<aOgV=zcY(b{XpUedR7E28xKLEV8y}E&d!jrPdlxS*sNk4qS!9n4*2%3c
+z&E|#vbEtfMuQ@Deq2+;NycUl{s5quqZ2<jvNtA$!kb!_#zMu3~jV%m`1n$iVjTbhc
+z;Q*kmn+?>gqT+QMI6-rG7sB2$gt~(097)ty12zh70rE2Gl&gmm9*2}eYi&<U;$8rF
+zi7ur#>sYC-Y(ubNl@2|D4-Q?hK!uSB5bq6X%mEkum$S$b`};E+g!lOd?tz91)dXF|
+zz^;TQlMslnTpF#yAw#aV2^$2rC8^}0c@T$R<A-M{2SS0uTu9`#`g(Z;I*{nzPzQz7
+zJ<ktiACZMU?~O$AtJ~tW2>45(LnF8YnKXr+ZKp$q-~l%R9QEDVKG0zR1&-*&5JHs5
+z$R7zk6pRhyk!y$o6vArK8$Oybf+-0hlC6lh7lP2F8JeRhIy71!IW2XDbk;w7psnU-
+z5lC$uRrn_srlmkA;NCVOWlM2&GC9YT042ePD=nP-U=Fe^+#k_@;x}D-2_IphP4W~t
+z7W6oP-Z)k8+#@X>@sw>@rh@<nkQPWTj=``T95W(~?JxLs`5a13-P{ra87YH@6)BBD
+z2p6y{Dm<?eR{j_zcpVE03s*#2lI{jpfv^NM6>*Y@GI&!{Mk~<(UGl@OK!+uW&QoIH
+zx5H?+VUTfxoIml1%Nlwp7)ww|OTz`_^8{PN#^8%YIW4O6uqFp3geLfN2f528V!Rg_
+zXNXxdl#R?>(A0|(9lP2bejLGZ+sjgfMG&OTdY0LOm~7GoRo$<O4Ma>@?W;Wk_@-vM
+zHX^d_B5;$YDlA{~9UrLzF<V1|Lmak|j*ucCnjwJc1O|xR2qlDC1@&vrd(9Jk@^FdJ
+z2O{qw51MZxP4Lv3G(*K3pkT-xLV#ED5}RgEpM&!cpnL@Z63ZTPG{_|+>|1r4poX~N
+zO^DxqAwmbHg>o*vJ0Z)e*_37R`iOW@M4a}E(@25EiOOI%b*WleU#snTQQ({O1*A2u
+z&M#UgQ8pm7M(qDUGl)l{(Yuj_oyfu<5s$tyh=h$a8Kt*AM%ovWQF<9*q&=FBQV}rH
+z9)BiESlvi_?)y>7@<-Y;k<`(h6ZJtXm3np%pGf}6U^0?AzH_36<I~jSAf8HoZ*Vk{
+zniO~9spaS(o=9E-a47D*Hi#Wg<p%L1$y0-8#T`(ZpgU>YxfGq2V(+KupQtAO524a9
+A)&Kwi
+
+literal 0
+HcmV?d00001
+
+diff --git a/wg.c b/wg.c
+index a7c153a..04011db 100644
+--- a/wg.c
++++ b/wg.c
+@@ -9,7 +9,7 @@ static const struct wg_ops *wg_get_ops(struct network *net)
+ 	if (wg_user_ops.check(net))
+ 		return &wg_user_ops;
+ 
+-#ifdef linux
++#ifdef WG_LINUX_SUPPORT
+ 	return &wg_linux_ops;
+ #else
+ 	return NULL;
+diff --git a/wg.h b/wg.h
+index b101c0a..e8dc349 100644
+--- a/wg.h
++++ b/wg.h
+@@ -38,7 +38,9 @@ struct wg {
+ };
+ 
+ extern const struct wg_ops wg_user_ops;
++#ifdef WG_LINUX_SUPPORT
+ extern const struct wg_ops wg_linux_ops;
++#endif
+ 
+ int wg_init_network(struct network *net);
+ void wg_cleanup_network(struct network *net);

@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Tue, 29 Sep 2026 10:31:11 +0000
+Subject: [PATCH] network: do not fail setup when the interface has no ifindex
+
+net->ifindex is consumed only by the VXLAN service. Requiring it unnecessarily
+excludes platforms where the WireGuard device has no netdev name resolvable by
+if_nametoindex(), such as a tun created by an Android VpnService. Keep the hard
+failure when VXLAN support is compiled in, and warn otherwise.
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ network.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/network.c b/network.c
+index fd776ac..2844b39 100644
+--- a/network.c
++++ b/network.c
+@@ -611,8 +611,17 @@ static int network_setup(struct network *net)
+ 
+ 	net->ifindex = if_nametoindex(network_name(net));
+ 	if (!net->ifindex) {
++#ifdef VXLAN_SUPPORT
+ 		fprintf(stderr, "Could not get ifindex for network %s\n", network_name(net));
+ 		return -1;
++#else
++		/*
++		 * Only the VXLAN service consumes net->ifindex. Platforms where
++		 * the WireGuard device has no resolvable netdev name (e.g. an
++		 * Android VpnService tun) must still be able to set up a network.
++		 */
++		D_NET(net, "no ifindex for interface, continuing without it");
++#endif
+ 	}
+ 
+ 	return 0;
