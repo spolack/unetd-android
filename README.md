@@ -180,10 +180,17 @@ See `NOTICE`.
 
 ## A note on what is verified
 
-The native side (patch series, host build, M0) is verified on this machine and
-reproducible from a clean checkout. **The Android app is not.** The development
-container's network policy blocks `dl.google.com`, which is where Google's Maven
-redirects, so the Android Gradle Plugin and AndroidX cannot be resolved locally
-and nothing in `app/` has been through a compiler yet. CI is its first real
-build. Allowing that host in the environment's network settings would let the
-APK be built and verified here too.
+The native side (patch series, host build, M0) is verified locally and in CI,
+and is reproducible from a clean checkout. M0 also passes in CI with
+`CAP_NET_RAW` dropped, which is the case that matters for Android and which a
+container holding that capability cannot exercise.
+
+The Android app builds, lints and passes unit tests in CI. It has **not** been
+run on a device or emulator, so the UI is verified only as far as compiling and
+lint go — nothing here has been seen rendering. `UnetVpnService` in particular
+has never actually established a tunnel.
+
+One development note: the container this was written in blocks `dl.google.com`,
+where Google's Maven redirects, so AGP and AndroidX cannot be resolved there and
+`./gradlew` only works in CI. Allowing that host makes local Android builds work
+too.
