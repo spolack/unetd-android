@@ -1,3 +1,6 @@
 /build/
 *.o
 *.so
+.gradle/
+local.properties
+app/build/

@@ -4,7 +4,8 @@ An Android VPN client that embeds [unetd](https://github.com/openwrt/unetd)
 natively and acts as the system VPN provider, interoperating with existing
 unetd networks.
 
-**Status:** architecture validated on Linux (M0 passes). No Android app yet.
+**Status:** architecture validated on Linux (M0 passes). The Android app is an
+app shell — real UI, real `VpnService`, fake data — not yet wired to native unetd.
 
 ---
 
@@ -70,15 +71,47 @@ $ sudo ./tests/host/m0-uapi-hinge.sh build/host/unetd third_party/unetd build/ho
 PASS: unetd drove wireguard-go over UAPI with no ubus, no VXLAN and no kernel backend
 ```
 
+## The app
+
+`app/` is a Compose app with the real `VpnService` and the real routing policy,
+driven by `FakeUnetRepository` so the UI can be built and reviewed before the
+native layer exists. The UI talks to a `UnetRepository` interface, so swapping
+the fake for the JNI-backed one does not touch the screens.
+
+What is deliberately real already:
+
+- `UnetVpnService` establishes the tun with the policy above — `addAddress(/128)`,
+  one `addRoute(<ula>/64)`, MTU 1280 — and exposes `protectSocket(fd)` for the
+  native side. It does **not** call `addDisallowedApplication`, which would
+  exclude our own UID and so break the in-tunnel PEX socket.
+- The `Discovery` card surfaces which of PEX / STUN / DHT are live, and says
+  plainly that raw sockets are unavailable on Android rather than hiding it.
+
+What is stubbed: everything behind `TODO(native)` — starting wireguard-go,
+starting unetd, and the `network_do_update()` callback that should supply the
+addresses and routes instead of the placeholders.
+
+```
+./gradlew :app:assembleDebug      # → app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## Layout
 
 ```
+app/                Compose app, VpnService, fake repository
 patches/unetd/      ordered, individually upstreamable patch series
 third_party/unetd   submodule, pinned to 7c3213d
 third_party/libubox submodule
 scripts/            apply-patches.sh, build-host.sh
 tests/host/         M0 harness
 ```
+
+## CI
+
+| Workflow | What it does |
+|---|---|
+| `.github/workflows/android.yml` | Builds the debug APK and uploads it as an artifact; a second job runs lint and unit tests. |
+| `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go, runs M0 — once normally and once with `CAP_NET_RAW` dropped. |
 
 Upstream is vendored as a submodule and the Android changes are kept as an
 ordered patch series rather than a fork, so each one stays submittable to
@@ -144,3 +177,13 @@ must run somewhere with IPv6 in the kernel — hence the CI workflow.
 GPL-3.0-or-later. unetd is GPL-2.0-or-later and wireguard-android is Apache-2.0;
 Apache-2.0 is compatible with GPLv3 but not GPLv2, so the combination is GPLv3.
 See `NOTICE`.
+
+## A note on what is verified
+
+The native side (patch series, host build, M0) is verified on this machine and
+reproducible from a clean checkout. **The Android app is not.** The development
+container's network policy blocks `dl.google.com`, which is where Google's Maven
+redirects, so the Android Gradle Plugin and AndroidX cannot be resolved locally
+and nothing in `app/` has been through a compiler yet. CI is its first real
+build. Allowing that host in the environment's network settings would let the
+APK be built and verified here too.
