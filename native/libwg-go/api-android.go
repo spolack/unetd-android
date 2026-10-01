@@ -73,13 +73,21 @@ func init() {
 	})
 }
 
+// Strings arriving through cgo point at the caller's C buffer, which jni.c
+// releases as soon as the call returns. Anything kept beyond the call -- the
+// socket directory, the name a UAPI listener goroutine watches for -- must be
+// copied first, or it dangles. (The first device run failed exactly there:
+// "UAPIOpen: mkdir <garbage>".)
+
 //export wgSetSocketDirectory
 func wgSetSocketDirectory(dir string) {
-	ipc.SetSocketDirectory(dir)
+	ipc.SetSocketDirectory(strings.Clone(dir))
 }
 
 //export wgTurnOn
 func wgTurnOn(uapiName string, tunFd int32, settings string) int32 {
+	uapiName = strings.Clone(uapiName)
+	settings = strings.Clone(settings)
 	logger := &device.Logger{
 		Verbosef: stderrLogger{prefix: "wg[" + uapiName + "] "}.Printf,
 		Errorf:   stderrLogger{prefix: "wg[" + uapiName + "] error: "}.Printf,
