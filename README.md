@@ -232,6 +232,9 @@ upstream on its own.
 | `0006` platform: hooks for socket protection and interface updates | `protect_socket()` for the sockets that must bypass the tunnel the process itself provides; `network_update()` as an in-process replacement for `update-cmd`, since fork+exec is unavailable to an app on Android 10+. Both optional; nothing changes when unset. |
 | `0007` network: expose the status dump without ubus | `__network_dump()` was static in `ubus.c`, so a build without ubus had no way to report peers, endpoints or counters at all. |
 | `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`, so an app can run the DHT node from its own entry point. |
+| `0009` pex: report dropped global messages and failed sends | A host that never gets its network data could not be debugged: unknown-network drops and `sendto()` errors were silent. The emulator run was diagnosed with exactly these lines. |
+| `0010` pex: IPv4 fallback for the global PEX socket | The socket is `AF_INET6` dual-stack and cannot be created on a kernel with `ipv6.disable=1`; unetd then ran with no peer exchange at all. Open an IPv4 socket on the same port instead. |
+| `0011` udht: `-b` bootstrap option | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. |
 
 And for wireguard-go (`patches/wireguard-go/`):
 
@@ -282,6 +285,7 @@ real WireGuard port with no spoofing and no capability at all.
 | Test | What it exercises |
 |---|---|
 | M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
+| M1 `tests/dht/nat-testbed.sh` | **DHT discovery with both ends behind NAT**, the topology this app is for. Five network namespaces: a gateway and a phone, each behind its own port-preserving MASQUERADE router with unsolicited WAN input dropped, and an "internet" between them running a private DHT of ten nodes (`tests/dht/dhtnode.c`, on unetd's own `dht.c`). The phone knows only its key and the network's public key. It must find the gateway's external address through the DHT, fetch the signed data over the global PEX socket through both NATs, learn the WireGuard endpoint from PEX, and get a UDP echo back through the tunnel. Passes in about two minutes; the DHT bootstrap is most of it. |
 | M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
 
 ## The emulator test
@@ -330,8 +334,18 @@ exactly this test: `allowFamily` (Android blocks an unrouted address family
 otherwise) and `ACCESS_LOCAL_NETWORK` (Android 17 refuses packets to LAN
 addresses without it, which is where a gateway usually lives).
 
-Not verified anywhere yet: the DHT node in its own process, STUN, peer
-exchange through a NAT with a *real* router on the other side, Doze and
-roaming on a phone, and GrapheneOS specifics. The app has run on one physical
+DHT rendezvous, peer exchange and the WireGuard handshake with **both ends
+behind NAT** are verified on Linux (M1, `tests/dht/nat-testbed.sh`), with the
+same unetd and wireguard-go code the app embeds, against netfilter NATs that
+behave like home routers. One finding from building it is worth knowing:
+a Linux NAT that *accepts* unsolicited WAN packets into its own stack (no
+`INPUT` drop rule) confirms a conntrack entry for them, and the LAN host's own
+mapping then loses its source port; with both sides doing that at once,
+nothing ever connects. Routers with a normal WAN firewall do not have this
+problem.
+
+Not verified anywhere yet: the DHT node in the app's own `:dht` process on a
+device, STUN, the public BitTorrent DHT (the testbed uses a private one), Doze
+and roaming on a phone, and GrapheneOS specifics. The app has run on one physical
 device so far, where the VPN came up but the device's own VPN settings
 (always-on) were still being investigated.

@@ -64,6 +64,30 @@ jobs:
           sudo ./tests/host/m1-core.sh \
             build/native-host/core-test third_party/unetd build/host/wireguard-go
 
+      # M1: DHT rendezvous with both ends behind NAT. Two unetd nodes in network
+      # namespaces, each behind its own MASQUERADE router, a private DHT of ten
+      # nodes on the "internet" between them; the phone side knows only its key
+      # and the network's public key and has to find the gateway through the
+      # DHT, fetch the signed data over PEX and bring WireGuard up through both
+      # NATs.
+      - name: Build the private DHT node
+        run: cc -O2 -I third_party/unetd -o build/host/dhtnode tests/dht/dhtnode.c third_party/unetd/dht.c
+
+      - name: M1 - DHT discovery through two NATs
+        run: |
+          sudo apt-get install -y -qq iptables conntrack >/dev/null
+          sudo ./tests/dht/nat-testbed.sh "$PWD/build/host" /tmp/unetd-nat-testbed
+
+      - name: Upload M1 logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: m1-dht-nat-logs
+          path: |
+            /tmp/unetd-nat-testbed/*/*.log
+            /tmp/unetd-nat-testbed/dht/*.log
+          if-no-files-found: ignore
+
       - name: M0 - same, with CAP_NET_RAW dropped
         # Proves the raw-socket degradation patch: an unprivileged Android app
         # can never get CAP_NET_RAW, so unetd must still configure WireGuard

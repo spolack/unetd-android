@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <spolack+claude@mailbox.org>
-Date: Thu, 1 Oct 2026 19:34:56 +0000
+Date: Thu, 1 Oct 2026 20:32:05 +0000
 Subject: [PATCH] pex: report dropped global messages and failed sends
 
 global_pex_recv() silently discarded anything that was not a PEX message,
@@ -14,8 +14,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
 ---
  pex-msg.c |  3 +++
- pex.c     | 15 ++++++++++++---
- 2 files changed, 15 insertions(+), 3 deletions(-)
+ pex.c     | 10 ++++++++--
+ 2 files changed, 11 insertions(+), 2 deletions(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
 index 79aceb1..7885952 100644
@@ -32,20 +32,18 @@ index 79aceb1..7885952 100644
  }
  
 diff --git a/pex.c b/pex.c
-index 9108bb7..34613ee 100644
+index 9108bb7..f0ecc75 100644
 --- a/pex.c
 +++ b/pex.c
-@@ -1057,19 +1057,28 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
+@@ -1056,6 +1056,7 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
+ 			network_stun_rx_packet(net, msg, msg_len);
  	}
  
++	/* not necessarily a PEX message: DHT traffic shares this socket */
  	hdr = pex_rx_accept(msg, msg_len, true);
--	if (!hdr)
-+	if (!hdr) {
-+		D("PEX global rx: dropped %zu bytes from %s (not a PEX message)", msg_len,
-+		  inet_ntop(AF_INET6, &addr->sin6_addr, buf, sizeof(buf)));
+ 	if (!hdr)
  		return;
-+	}
- 
+@@ -1063,13 +1064,18 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
  	ehdr = (void *)(hdr + 1);
  	data = (void *)(ehdr + 1);
  
@@ -59,8 +57,7 @@ index 9108bb7..34613ee 100644
  		net = global_pex_find_network(ehdr->auth_id);
 -		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC)
 +		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC) {
-+			D("PEX global rx: op=%d from %s for %s network", hdr->opcode,
-+			  inet_ntop(AF_INET6, &addr->sin6_addr, buf, sizeof(buf)),
++			D("PEX global rx: op=%d for %s network", hdr->opcode,
 +			  net ? "a non-dynamic" : "an unknown");
  			return;
 +		}

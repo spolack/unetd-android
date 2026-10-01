@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 20:23:01 +0000
+Subject: [PATCH] udht: add -b to bootstrap from a chosen DHT node
+
+The only bootstrap nodes were the two hard-coded public routers, which makes
+unet-dht untestable without internet access and unusable in a private DHT.
+-b <host>[:<port>], repeatable, replaces that list; the default is unchanged.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ udht.c | 52 +++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 41 insertions(+), 11 deletions(-)
+
+diff --git a/udht.c b/udht.c
+index 9162364..16b4e8e 100644
+--- a/udht.c
++++ b/udht.c
+@@ -363,7 +363,11 @@ static void udht_add_peer(const void *data, int len)
+ 		uloop_timeout_set(&peer_timer, 1);
+ }
+ 
+-static void udht_add_bootstrap_peer(void)
++#define UDHT_MAX_BOOTSTRAP 16
++static const char *bootstrap_args[UDHT_MAX_BOOTSTRAP];
++static int n_bootstrap_args;
++
++static void udht_resolve_bootstrap(const char *spec)
+ {
+ 	const struct addrinfo hints = {
+ 		.ai_family = AF_INET,
+@@ -371,21 +375,41 @@ static void udht_add_bootstrap_peer(void)
+ 		.ai_flags = AI_ADDRCONFIG,
+ 	};
+ 	struct addrinfo *res, *cur;
+-	static const char * const bootstrap_hosts[] = {
+-		"router.bittorrent.com",
+-		"router.utorrent.com",
+-	};
+-	int i;
++	char *host = strdup(spec), *port;
+ 
+-	for (i = 0; i < ARRAY_SIZE(bootstrap_hosts); i++) {
+-		if (getaddrinfo(bootstrap_hosts[i], "6881", &hints, &res) < 0)
+-			continue;
++	if (!host)
++		return;
+ 
++	port = strrchr(host, ':');
++	if (port)
++		*(port++) = 0;
++	else
++		port = "6881";
++
++	if (getaddrinfo(host, port, &hints, &res) == 0) {
+ 		for (cur = res; cur; cur = cur->ai_next)
+ 			udht_add_peer(cur->ai_addr, cur->ai_addrlen);
+-
+ 		freeaddrinfo(res);
+ 	}
++	free(host);
++}
++
++static void udht_add_bootstrap_peer(void)
++{
++	static const char * const bootstrap_hosts[] = {
++		"router.bittorrent.com:6881",
++		"router.utorrent.com:6881",
++	};
++	int i;
++
++	if (n_bootstrap_args) {
++		/* -b replaces the public routers: a private or local DHT */
++		for (i = 0; i < n_bootstrap_args; i++)
++			udht_resolve_bootstrap(bootstrap_args[i]);
++	} else {
++		for (i = 0; i < ARRAY_SIZE(bootstrap_hosts); i++)
++			udht_resolve_bootstrap(bootstrap_hosts[i]);
++	}
+ 
+ 	state.bootstrap_added = true;
+ }
+@@ -585,6 +609,8 @@ static int usage(const char *progname)
+ {
+ 	fprintf(stderr, "Usage: %s [<options>] -u <socket> <id string>\n"
+ 		"Options:\n"
++		"	-b <host>[:<port>]	Bootstrap from this DHT node instead of the\n"
++		"				public routers (repeatable, default port 6881)\n"
+ 		"	-d			Enable debug mode\n"
+ 		"	-n <file>		Set node filename\n"
+ 		"	-N <key>		Add network key\n"
+@@ -660,8 +686,12 @@ int udht_main(int argc, char **argv)
+ 	uint8_t auth_key[CURVE25519_KEY_SIZE];
+ 	int ch;
+ 
+-	while ((ch = getopt(argc, argv, "dN:n:u:")) != -1) {
++	while ((ch = getopt(argc, argv, "b:dN:n:u:")) != -1) {
+ 		switch (ch) {
++		case 'b':
++			if (n_bootstrap_args < UDHT_MAX_BOOTSTRAP)
++				bootstrap_args[n_bootstrap_args++] = optarg;
++			break;
+ 		case 'N':
+ 			if (b64_decode(optarg, auth_key, CURVE25519_KEY_SIZE) != CURVE25519_KEY_SIZE) {
+ 				fprintf(stderr, "Invalid network key\n");

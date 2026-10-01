@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 20:23:01 +0000
+Subject: [PATCH] pex: fall back to an IPv4 socket when the kernel has no
+ IPv6
+
+The global PEX socket is AF_INET6 with IPV6_V6ONLY off, which serves both
+families on one socket but cannot be created at all on a kernel booted with
+ipv6.disable=1: socket() fails with EAFNOSUPPORT and unetd runs without
+peer exchange, network data updates and the DHT relay.
+
+When that happens, open an AF_INET socket on the same port instead and keep
+the rest working. Addresses handed to sendto() go through one helper that
+maps IPv4 into IPv6 for the dual-stack socket, as before, or unmaps IPv6-mapped
+IPv4 back for the IPv4 socket; IPv6 peers are unreachable in that mode and
+sends to them fail instead of being attempted. Received addresses already
+arrive as plain sockaddr_in for the callbacks, so the receive path only gains
+a family check before testing for a mapped address.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ pex-msg.c | 79 +++++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 74 insertions(+), 5 deletions(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index 7885952..de088db 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -44,6 +44,9 @@ int pex_raw_socket(int family)
+ 	return family == AF_INET ? pex_raw_v4_fd : pex_raw_v6_fd;
+ }
+ 
++/* The global PEX socket could not be AF_INET6 (kernel without IPv6) */
++static bool pex_fd_v4only;
++
+ static const void *
+ get_mapped_sockaddr(const void *addr)
+ {
+@@ -63,6 +66,43 @@ get_mapped_sockaddr(const void *addr)
+ 	return &sin6;
+ }
+ 
++/*
++ * The address to pass to sendto() on the global PEX socket, and its length:
++ * IPv4 mapped into IPv6 on the usual dual-stack socket, or unmapped back to
++ * plain IPv4 when only an IPv4 socket could be opened. NULL if the address
++ * cannot be reached from that socket at all (IPv6 without an IPv6 socket).
++ */
++static const void *
++pex_fd_sockaddr(const void *addr, socklen_t *len)
++{
++	static struct sockaddr_in sin;
++	const struct sockaddr *sa = addr;
++
++	if (!pex_fd_v4only) {
++		*len = sizeof(struct sockaddr_in6);
++		return get_mapped_sockaddr(addr);
++	}
++
++	*len = sizeof(sin);
++	if (sa->sa_family == AF_INET)
++		return addr;
++
++	if (sa->sa_family == AF_INET6) {
++		const struct sockaddr_in6 *sin6 = addr;
++
++		if (!IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr))
++			return NULL;
++
++		memset(&sin, 0, sizeof(sin));
++		sin.sin_family = AF_INET;
++		sin.sin_port = sin6->sin6_port;
++		memcpy(&sin.sin_addr, &sin6->sin6_addr.s6_addr[12], sizeof(sin.sin_addr));
++		return &sin;
++	}
++
++	return NULL;
++}
++
+ struct pex_msg_update_recv_ctx {
+ 	struct list_head list;
+ 
+@@ -187,7 +227,7 @@ pex_fd_cb(struct uloop_fd *fd, unsigned int events)
+ 		if (!len)
+ 			continue;
+ 
+-		if (IN6_IS_ADDR_V4MAPPED(&sin6.sin6_addr)) {
++		if (sin6.sin6_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&sin6.sin6_addr)) {
+ 			struct sockaddr_in *sin = (struct sockaddr_in *)&sin6;
+ 			struct in_addr in = *(struct in_addr *)&sin6.sin6_addr.s6_addr[12];
+ 			int port = sin6.sin6_port;
+@@ -302,8 +342,12 @@ pex_unix_cb(struct uloop_fd *fd, unsigned int events)
+ 		if (len <= slen)
+ 			continue;
+ 
+-		sa = get_mapped_sockaddr(sa);
+-		sendto(pex_fd.fd, buf + slen, len - slen, 0, sa, sizeof(struct sockaddr_in6));
++		socklen_t sa_len;
++
++		sa = pex_fd_sockaddr(sa, &sa_len);
++		if (!sa)
++			continue;
++		sendto(pex_fd.fd, buf + slen, len - slen, 0, sa, sa_len);
+ 	}
+ }
+ 
+@@ -321,8 +365,12 @@ int __pex_msg_send(int fd, const void *addr, void *ip_hdr, size_t ip_hdrlen)
+ 		if (ip_hdrlen)
+ 			fd = pex_raw_socket(sa->sa_family);
+ 		else {
++			socklen_t sa_len;
++
+ 			fd = pex_fd.fd;
+-			sa = addr = get_mapped_sockaddr(addr);
++			sa = addr = pex_fd_sockaddr(addr, &sa_len);
++			if (!sa)
++				return -1;
+ 		}
+ 
+ 		if (fd < 0)
+@@ -627,6 +675,7 @@ pex_gc_cb(struct uloop_timeout *t)
+ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ {
+ 	struct sockaddr *sa = addr;
++	struct sockaddr_in v4addr = {};
+ 	int yes = 1, no = 0;
+ 	int fd;
+ 
+@@ -661,7 +710,26 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ 	if (!pex_urandom)
+ 		goto close_raw;
+ 
++	pex_fd_v4only = false;
+ 	fd = socket(sa->sa_family == AF_INET ? PF_INET : PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
++	if (fd < 0 && errno == EAFNOSUPPORT && sa->sa_family == AF_INET6) {
++		/*
++		 * No IPv6 in this kernel (ipv6.disable=1). Fall back to an IPv4
++		 * socket on the same port; IPv6 peers are then unreachable, but
++		 * everything else keeps working.
++		 */
++		const struct sockaddr_in6 *sin6 = addr;
++
++		v4addr.sin_family = AF_INET;
++		v4addr.sin_port = sin6->sin6_port;
++		memcpy(&v4addr.sin_addr, &sin6->sin6_addr.s6_addr[12],
++		       IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr) ? sizeof(v4addr.sin_addr) : 0);
++		addr = &v4addr;
++		addr_len = sizeof(v4addr);
++		fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
++		pex_fd_v4only = true;
++		fprintf(stderr, "pex: no IPv6 support, using an IPv4-only global socket\n");
++	}
+ 	if (fd < 0)
+ 		goto close_urandom;
+ 
+@@ -679,7 +747,8 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ 		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+ 		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+ 		setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+-		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no));
++		if (!pex_fd_v4only)
++			setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no));
+ 	} else {
+ 		if (connect(fd, addr, addr_len) < 0) {
+ 			perror("connect");
