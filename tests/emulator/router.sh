@@ -90,6 +90,23 @@ ip addr add "$ROUTER_IP/32" dev "$NET"
 ip link set "$NET" up
 ip route add "$PHONE_IP/32" dev "$NET"
 
+# Diagnostics: a UDP echo on the host (the test checks that UDP from the
+# emulator reaches the machine at all) and a capture of the PEX/WireGuard ports.
+python3 - > udp-echo.log 2>&1 <<'PYEOF' &
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("0.0.0.0", 51999))
+while True:
+    data, addr = s.recvfrom(2048)
+    print("echo", addr, data[:64], flush=True)
+    s.sendto(data, addr)
+PYEOF
+echo $! > udp-echo.pid
+if command -v tcpdump >/dev/null 2>&1; then
+	tcpdump -i any -n -U "udp port 51819 or udp port $PORT or udp port 51999" -w capture.pcap > tcpdump.log 2>&1 &
+	echo $! > tcpdump.pid
+fi
+
 # What the test fetches through the tunnel.
 mkdir -p www && echo "hello from the router over unetd" > www/index.html
 python3 -m http.server 8080 --bind "$ROUTER_IP" --directory www > http.log 2>&1 &

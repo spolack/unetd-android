@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 19:34:56 +0000
+Subject: [PATCH] pex: report dropped global messages and failed sends
+
+global_pex_recv() silently discarded anything that was not a PEX message,
+had an unknown version or belonged to no dynamic network, and __pex_msg_send()
+silently returned the sendto() error. Debugging a host that never gets its
+network data then means guessing whether the request left, arrived, or was
+rejected. Log each case: the drops in debug mode, the send failure via
+perror() like the other socket errors in this file.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ pex-msg.c |  3 +++
+ pex.c     | 15 ++++++++++++---
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index 79aceb1..7885952 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -346,6 +346,9 @@ int __pex_msg_send(int fd, const void *addr, void *ip_hdr, size_t ip_hdrlen)
+ 	}
+ 	hdr->len = orig_len;
+ 
++	if (ret < 0)
++		perror("pex: send");
++
+ 	return ret;
+ }
+ 
+diff --git a/pex.c b/pex.c
+index 9108bb7..34613ee 100644
+--- a/pex.c
++++ b/pex.c
+@@ -1057,19 +1057,28 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
+ 	}
+ 
+ 	hdr = pex_rx_accept(msg, msg_len, true);
+-	if (!hdr)
++	if (!hdr) {
++		D("PEX global rx: dropped %zu bytes from %s (not a PEX message)", msg_len,
++		  inet_ntop(AF_INET6, &addr->sin6_addr, buf, sizeof(buf)));
+ 		return;
++	}
+ 
+ 	ehdr = (void *)(hdr + 1);
+ 	data = (void *)(ehdr + 1);
+ 
+-	if (hdr->version != 0)
++	if (hdr->version != 0) {
++		D("PEX global rx: dropped version %d message", hdr->version);
+ 		return;
++	}
+ 
+ 	if (hdr->opcode != PEX_MSG_ENROLL) {
+ 		net = global_pex_find_network(ehdr->auth_id);
+-		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC)
++		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC) {
++			D("PEX global rx: op=%d from %s for %s network", hdr->opcode,
++			  inet_ntop(AF_INET6, &addr->sin6_addr, buf, sizeof(buf)),
++			  net ? "a non-dynamic" : "an unknown");
+ 			return;
++		}
+ 
+ 		*(uint64_t *)hdr->id ^= pex_network_hash(net->config.auth_key, ehdr->nonce);
+ 

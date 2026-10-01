@@ -91,6 +91,14 @@ class TunnelEmulatorTest {
         assertInternet("with the VPN up (placeholder tun, no routes)")
     }
 
+    /** UDP from inside the app to the host, with the VPN up: the path unetd's PEX requests take. */
+    @Test
+    fun t2b_udpReachesHost() {
+        val reply = udpEcho(gatewayHost, 51999, "unetd-android probe")
+        println("udp echo to $gatewayHost:51999 -> $reply")
+        assertEquals("UDP echo from the host", "unetd-android probe", reply)
+    }
+
     @Test
     fun t3_tunnelCarriesTraffic() {
         val router = routerAddress
@@ -143,6 +151,24 @@ class TunnelEmulatorTest {
             fail("HTTP $probeUrl failed $stage ($host -> $resolved): $e"); -1
         }
         assertTrue("HTTP $probeUrl answered $code $stage", code in 200..299)
+    }
+
+    private fun udpEcho(host: String, port: Int, payload: String): String? {
+        java.net.DatagramSocket().use { socket ->
+            socket.soTimeout = 3_000
+            val bytes = payload.toByteArray()
+            repeat(3) {
+                socket.send(java.net.DatagramPacket(bytes, bytes.size, InetAddress.getByName(host), port))
+                try {
+                    val buf = ByteArray(2048)
+                    val p = java.net.DatagramPacket(buf, buf.size)
+                    socket.receive(p)
+                    return String(p.data, 0, p.length)
+                } catch (_: java.net.SocketTimeoutException) {
+                }
+            }
+        }
+        return null
     }
 
     private fun httpGet(url: String): Int {

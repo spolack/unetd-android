@@ -227,7 +227,10 @@ jobs:
         if: always()
         run: |
           mkdir -p emulator-logs
+          sudo pkill -INT tcpdump 2>/dev/null || true; sleep 1
           sudo cp /tmp/unetd-router/*.log emulator-logs/ 2>/dev/null || true
+          sudo tcpdump -n -r /tmp/unetd-router/capture.pcap > emulator-logs/capture.txt 2>/dev/null || true
+          sudo ss -lunp | grep -E "51819|51830|51999" > emulator-logs/listeners.txt || true
           cp instrument.txt logcat.txt emulator-logs/ 2>/dev/null || true
           sudo chown -R "$USER" emulator-logs
           echo "### Emulator test" >> "$GITHUB_STEP_SUMMARY"
