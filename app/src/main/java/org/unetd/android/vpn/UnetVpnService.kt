@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.unetd.android.BuildConfig
 import org.unetd.android.MainActivity
 import org.unetd.android.R
 import org.unetd.android.config.ConfigStore
@@ -105,6 +106,9 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         config = cfg
         runDir.mkdirs()
         Unetd.startLogCapture()
+        // First line of every connection in the Log screen: which build this is.
+        Log.i(TAG, "unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) starting; wireguard-go ${WgGo.wgVersion()}")
+        System.err.println("unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) connecting")
         TunnelRuntime.set(TunnelRuntime.empty.copy(name = cfg.effectiveName(), state = TunnelState.Connecting))
 
         val tun = ConfigStore.loadLastTun(this) ?: TunSettings.placeholder()
@@ -117,6 +121,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         val name = cfg.effectiveName()
         statusJob = scope.launch { pollStatus(name, cfg.dht) }
         if (cfg.dht) scheduleDhtPing(cfg)
+        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) }
         Log.i(TAG, "tunnel up: wireguard-go ${WgGo.wgVersion()}, network $name")
     }
 
@@ -180,6 +185,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
                 val (addr, prefix) = r.split('/')
                 builder.addRoute(addr, prefix.toInt())
             }
+            System.err.println("tun: addresses=${tun.addresses} routes=${tun.routes} (split tunnel, both families allowed)")
             builder.establish()
         } catch (e: Exception) {
             Log.e(TAG, "establish() failed for $tun", e)
@@ -224,6 +230,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
             return
         }
         currentTun = desired
+        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) }
     }
 
     // ---- status ----------------------------------------------------------------
@@ -295,8 +302,12 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         statusJob?.cancel()
         statusJob = null
         if (config?.dht == true) stopDht()
-        Unetd.stop()
+        // The tun goes first: closing it is what ends the VPN for Android, and it
+        // must not wait on unetd, whose event loop can sit in a blocking DNS
+        // lookup for a gateway (seconds to minutes when the network is unusable).
         teardownWg()
+        System.err.println("tunnel closed, stopping unetd")
+        Unetd.stop()
         WgGo.wgSetProtector(null)
         currentTun = null
         TunnelRuntime.setState(TunnelState.Disconnected, error)

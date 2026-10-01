@@ -105,6 +105,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.VERSION_NAME is logged at every connect (off by default in AGP 8+).
+        buildConfig = true
     }
 
     packaging {
