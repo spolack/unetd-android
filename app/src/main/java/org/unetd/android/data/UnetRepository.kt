@@ -1,7 +1,9 @@
 package org.unetd.android.data
 
+import android.content.Context
+import android.content.Intent
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.random.Random
@@ -15,9 +17,30 @@ import kotlin.random.Random
  * never learns whether unetd is real.
  */
 interface UnetRepository {
-    val status: Flow<NetworkStatus>
+    val status: StateFlow<NetworkStatus>
     suspend fun connect()
     suspend fun disconnect()
+}
+
+/**
+ * The real thing: status comes from the VpnService through [TunnelRuntime], and
+ * connect/disconnect start and stop that service. The caller must have obtained
+ * the VPN permission (VpnService.prepare) before [connect].
+ */
+class NativeUnetRepository(private val context: Context) : UnetRepository {
+
+    override val status: StateFlow<NetworkStatus> = org.unetd.android.vpn.TunnelRuntime.status
+
+    override suspend fun connect() {
+        context.startForegroundService(Intent(context, org.unetd.android.vpn.UnetVpnService::class.java))
+    }
+
+    override suspend fun disconnect() {
+        context.startService(
+            Intent(context, org.unetd.android.vpn.UnetVpnService::class.java)
+                .setAction(org.unetd.android.vpn.UnetVpnService.ACTION_DISCONNECT),
+        )
+    }
 }
 
 /** Drives the UI from [SampleData], including the connect transition. */

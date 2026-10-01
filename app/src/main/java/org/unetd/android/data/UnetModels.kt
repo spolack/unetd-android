@@ -59,6 +59,10 @@ data class NetworkStatus(
     val connectedSinceMillis: Long?,
     val peers: List<Peer>,
     val capabilities: Capabilities,
+    /** Something the user should know about the current state, or null. */
+    val message: String? = null,
+    /** This device's public key, so it can be added to the network with unet-cli. */
+    val localPublicKey: String? = null,
 ) {
     val directPeerCount: Int get() = peers.count { it.link != PeerLink.Indirect }
     val onlinePeerCount: Int get() = peers.count { it.connected }

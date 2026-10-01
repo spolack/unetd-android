@@ -4,3 +4,6 @@
 .gradle/
 local.properties
 app/build/
+app/.cxx/
+native/libwg-go/build/
+.kotlin/

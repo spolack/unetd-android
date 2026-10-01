@@ -14,13 +14,45 @@ android {
     compileSdk = 37
     buildToolsVersion = "37.0.0"
 
+    // Latest LTS NDK (CLAUDE.md: always the latest stable). AGP downloads it on
+    // demand when it is missing from the SDK.
+    ndkVersion = "30.0.16248370"
+
     defaultConfig {
         applicationId = unetdPackageName
         // 26 gives us VpnService.Builder.setMetered() and foreground service types.
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0-dev"
+        versionCode = 2
+        versionName = "0.2.0-dev"
+
+        ndk {
+            // Go (libwg-go) and the NDK agree on these three; x86 is dropped as
+            // no current device ships it.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // AGP only builds the targets it is told about; libwg-go is a
+                // custom target (Go), so it has to be listed to be built at all.
+                targets += listOf("unet-android", "libwg-go")
+                // libwg-go is cross-compiled by Go from inside the CMake build;
+                // point it at a specific Go if `go` is not the one on PATH.
+                arguments += "-DGO_EXECUTABLE=${System.getenv("GO_EXECUTABLE") ?: "go"}"
+                // 16 KiB page sizes: NDK r28+ aligns for this by default; be explicit.
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+            }
+        }
+    }
+
+    // libubox + json-c + unetd + unet-dht + the JNI facade -> libunet-android.so,
+    // and wireguard-go + its JNI glue -> libwg-go.so. See native/CMakeLists.txt.
+    externalNativeBuild {
+        cmake {
+            path = file("../native/CMakeLists.txt")
+            version = "4.1.2"
+        }
     }
 
     buildTypes {

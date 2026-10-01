@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 16:10:48 +0000
+Subject: [PATCH] udht: allow building as a library
+
+Rename main() to udht_main() and keep main() as a thin wrapper that is
+compiled out with -DUDHT_LIBRARY. An embedder that cannot spawn processes
+(an Android app) can then run the DHT node from its own entry point; the
+argv interface stays as it is.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ udht.c | 9 ++++++++-
+ udht.h | 1 +
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/udht.c b/udht.c
+index cce4d40..9162364 100644
+--- a/udht.c
++++ b/udht.c
+@@ -654,7 +654,7 @@ int udht_reconnect(void)
+ 	return 0;
+ }
+ 
+-int main(int argc, char **argv)
++int udht_main(int argc, char **argv)
+ {
+ 	const char *progname = argv[0];
+ 	uint8_t auth_key[CURVE25519_KEY_SIZE];
+@@ -715,3 +715,10 @@ int main(int argc, char **argv)
+ 
+ 	return 0;
+ }
++
++#ifndef UDHT_LIBRARY
++int main(int argc, char **argv)
++{
++	return udht_main(argc, argv);
++}
++#endif
+diff --git a/udht.h b/udht.h
+index c85a1e6..529fdf3 100644
+--- a/udht.h
++++ b/udht.h
+@@ -1,6 +1,7 @@
+ #ifndef __UDHT_H
+ #define __UDHT_H
+ 
++int udht_main(int argc, char **argv);
+ int udht_reconnect(void);
+ void udht_network_add(const uint8_t *auth_key, int seq);
+ void udht_network_flush(int seq);

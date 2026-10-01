@@ -17,6 +17,10 @@ Look versions up from a primary source rather than from memory:
 - JDK: `https://api.adoptium.net/v3/info/available_releases`, checked against
   Gradle's Java compatibility matrix
 - GitHub Actions: the action's tags and its `action.yml` at that tag
+- NDK: `https://developer.android.com/ndk/downloads` (the LTS line), CMake and
+  platform packages: `sdkmanager --list`
+- Go: `https://go.dev/dl/?mode=json`
+- json-c, wireguard-go: upstream tags / HEAD (`git ls-remote`)
 
 Things that move together, so bump them together:
 
@@ -27,5 +31,9 @@ Things that move together, so bump them together:
 - compileSdk/targetSdk cannot exceed AGP's maximum supported API level.
 - The JDK must be one Gradle lists as supported for running builds.
 
-Upstream `third_party/unetd` and `third_party/libubox` track upstream HEAD; after
-bumping them, check that `patches/unetd/` still applies (`scripts/apply-patches.sh`).
+Upstream `third_party/unetd`, `third_party/libubox` and `third_party/wireguard-go`
+track upstream HEAD, `third_party/json-c` its latest release tag; after bumping any
+of them, check that the patch series in `patches/` still applies
+(`scripts/apply-patches.sh`) and that `native/libwg-go/go.mod` still resolves
+(`go mod tidy` there). The submodule gitlinks are committed at the *pristine*
+upstream commit, never at a patched one.

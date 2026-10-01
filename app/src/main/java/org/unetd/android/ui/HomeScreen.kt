@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -51,20 +52,29 @@ fun HomeScreen(
     status: NetworkStatus,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    configured: Boolean = true,
+    onOpenSetup: () -> Unit = {},
+    onOpenLog: () -> Unit = {},
 ) {
     Scaffold(
         topBar = {
-            TopAppBar(title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("unetd", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        status.name,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            })
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("unetd", fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            status.name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onOpenLog) { Text("Log") }
+                    TextButton(onClick = onOpenSetup) { Text("Setup") }
+                },
+            )
         },
     ) { inner ->
         LazyColumn(
@@ -72,7 +82,10 @@ fun HomeScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { StatusCard(status, onConnect, onDisconnect) }
+            if (!configured) {
+                item { SetupPrompt(onOpenSetup) }
+            }
+            item { StatusCard(status, onConnect, onDisconnect, configured) }
             item { CapabilityCard(status.capabilities) }
             item {
                 Text(
@@ -89,7 +102,32 @@ fun HomeScreen(
 }
 
 @Composable
-private fun StatusCard(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Unit) {
+private fun SetupPrompt(onOpenSetup: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("No network configured", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Generate a key for this device, enter the network's public key and a gateway, " +
+                    "and add the device to the network with unet-cli.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onOpenSetup) { Text("Set up") }
+        }
+    }
+}
+
+@Composable
+private fun StatusCard(
+    status: NetworkStatus,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    configured: Boolean,
+) {
     Card(shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -120,6 +158,24 @@ private fun StatusCard(status: NetworkStatus, onConnect: () -> Unit, onDisconnec
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            status.localPublicKey?.let {
+                Spacer(Modifier.height(6.dp))
+                Mono(it, 11, MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "public key",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            status.message?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (status.state == TunnelState.Disconnected) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (status.state == TunnelState.Connected) {
                 Spacer(Modifier.height(16.dp))
@@ -137,9 +193,8 @@ private fun StatusCard(status: NetworkStatus, onConnect: () -> Unit, onDisconnec
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Disconnect") }
 
-                TunnelState.Connecting -> Button(
-                    onClick = {},
-                    enabled = false,
+                TunnelState.Connecting -> OutlinedButton(
+                    onClick = onDisconnect,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     CircularProgressIndicator(
@@ -148,11 +203,12 @@ private fun StatusCard(status: NetworkStatus, onConnect: () -> Unit, onDisconnec
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.width(10.dp))
-                    Text("Connecting")
+                    Text("Connecting — tap to cancel")
                 }
 
                 TunnelState.Disconnected -> Button(
                     onClick = onConnect,
+                    enabled = configured,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Connect") }
             }

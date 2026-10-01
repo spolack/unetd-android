@@ -17,9 +17,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
-          # wireguard-go is cloned at build time, so there is no go.sum at setup
-          # and the module cache could never hit; it only produced a warning.
-          cache: false
+          cache-dependency-path: native/libwg-go/go.sum
 
       - name: Install build dependencies
         run: |
@@ -39,16 +37,32 @@ jobs:
               print("AF_INET6: UNAVAILABLE ->", e)
           PY
 
-      - name: Apply the Android patch series
+      - name: Apply the patch series
         run: ./scripts/apply-patches.sh
 
       - name: Build unetd (Android configuration) and wireguard-go
         run: ./scripts/build-host.sh
 
+      # The exact CMake project the app builds with the NDK, here for the host:
+      # libubox subset + json-c + unetd + the library wrapper + the test program.
+      - name: Build the native layer for the host
+        run: |
+          cmake -S native -B build/native-host -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/native-host
+
       - name: M0 - UAPI hinge
         run: |
           sudo ./tests/host/m0-uapi-hinge.sh \
             build/host/unetd third_party/unetd build/host/wireguard-go
+
+      # The library wrapper the app uses, driven the way the VpnService drives
+      # it: start, add, status, interface update, remove, stop -- twice in one
+      # process. With IPv6 here the global PEX socket opens and the protect()
+      # hook has to fire for it.
+      - name: M1a - unetd as a library, start/stop twice in one process
+        run: |
+          sudo ./tests/host/m1-core.sh \
+            build/native-host/core-test third_party/unetd build/host/wireguard-go
 
       - name: M0 - same, with CAP_NET_RAW dropped
         # Proves the raw-socket degradation patch: an unprivileged Android app

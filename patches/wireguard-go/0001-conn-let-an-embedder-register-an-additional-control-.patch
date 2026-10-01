@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 16:12:11 +0000
+Subject: [PATCH] conn: let an embedder register an additional control
+ function
+
+Socket options applied in listenConfig() are the only ones guaranteed to
+survive a rebind, since Device.BindUpdate() closes and reopens the sockets on
+every listen_port change. An embedder that needs per-descriptor treatment --
+on Android, VpnService.protect(), without which the tunnel's own packets are
+routed back into the tunnel -- currently has to re-apply it after the fact and
+race the rebind. Add AddControlFn so it can be applied before bind instead.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ conn/controlfns.go | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/conn/controlfns.go b/conn/controlfns.go
+index 27421bd..1432ef6 100644
+--- a/conn/controlfns.go
++++ b/conn/controlfns.go
+@@ -26,6 +26,18 @@ type controlFn func(network, address string, c syscall.RawConn) error
+ // that can apply socket options.
+ var controlFns = []controlFn{}
+ 
++// AddControlFn registers an additional function to run against every socket
++// before it is bound, after the platform defaults. It lets an embedder apply
++// per-socket configuration that must hold across rebinds -- on Android,
++// VpnService.protect(), which is per descriptor and therefore lost whenever a
++// listen_port change makes the device reopen its sockets.
++//
++// It must be called before the device is brought up and is not safe to call
++// concurrently with Bind.Open.
++func AddControlFn(fn func(network, address string, c syscall.RawConn) error) {
++	controlFns = append(controlFns, fn)
++}
++
+ // listenConfig returns a net.ListenConfig that applies the controlFns to the
+ // socket prior to bind. This is used to apply socket buffer sizing and packet
+ // information OOB configuration for sticky sockets.

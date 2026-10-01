@@ -41,5 +41,14 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <!--
+          unet-dht, in its own process: libubox's uloop is a process-wide
+          singleton and unetd owns the one in the main process.
+        -->
+        <service
+            android:name=".vpn.UdhtService"
+            android:exported="false"
+            android:process=":dht" />
     </application>
 </manifest>

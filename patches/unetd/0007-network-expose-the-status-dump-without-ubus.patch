@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 16:10:31 +0000
+Subject: [PATCH] network: expose the status dump without ubus
+
+__network_dump() was static in ubus.c, so a build with UBUS_SUPPORT=off had no
+way to report local host, peers, endpoints or counters at all. Move it to
+network.c as network_dump_status() and have ubus.c call it. No change in
+output.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ network.c | 86 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ network.h |  1 +
+ ubus.c    | 90 ++-----------------------------------------------------
+ 3 files changed, 89 insertions(+), 88 deletions(-)
+
+diff --git a/network.c b/network.c
+index 7bc2c45..ac5d204 100644
+--- a/network.c
++++ b/network.c
+@@ -498,6 +498,92 @@ bool network_skip_endpoint_route(struct network *net, union network_endpoint *ep
+ }
+ 
+ 
++void network_dump_status(struct blob_buf *buf, struct network *net)
++{
++	struct network_host *local = net->net_config.local_host;
++	struct network_service *s;
++	struct network_peer *peer;
++	void *c, *p, *m;
++	char *str;
++
++	c = blobmsg_open_table(buf, "config");
++	network_get_config(net, buf);
++	blobmsg_close_table(buf, c);
++
++	if (local) {
++		blobmsg_add_string(buf, "local_host", network_host_name(local));
++
++		peer = &local->peer;
++		str = blobmsg_alloc_string_buffer(buf, "local_address", INET6_ADDRSTRLEN);
++		inet_ntop(AF_INET6, &peer->local_addr.in6, str, INET6_ADDRSTRLEN);
++		blobmsg_add_string_buffer(buf);
++		if (peer->meta)
++			blobmsg_add_field(buf, BLOBMSG_TYPE_TABLE, "local_meta",
++					  blobmsg_data(peer->meta), blobmsg_data_len(peer->meta));
++	} else {
++		if (net->net_data_len)
++			blobmsg_add_u8(buf, "no_local_host", true);
++	}
++
++	if (net->update_refused)
++		blobmsg_add_u32(buf, "update_refused", net->update_refused);
++
++	c = blobmsg_open_table(buf, "peers");
++	vlist_for_each_element(&net->peers, peer, node) {
++		union network_endpoint *ep = &peer->state.endpoint;
++		void *addr;
++		int len;
++
++		p = blobmsg_open_table(buf, network_peer_name(peer));
++
++		str = blobmsg_alloc_string_buffer(buf, "address", INET6_ADDRSTRLEN);
++		inet_ntop(AF_INET6, &peer->local_addr.in6, str, INET6_ADDRSTRLEN);
++		blobmsg_add_string_buffer(buf);
++
++		blobmsg_add_u8(buf, "connected", peer->state.connected);
++		if (peer->state.connected) {
++			str = blobmsg_alloc_string_buffer(buf, "endpoint",
++							  INET6_ADDRSTRLEN + 7);
++			addr = network_endpoint_addr(ep, &len);
++			inet_ntop(ep->sa.sa_family, addr, str, INET6_ADDRSTRLEN);
++			len = strlen(str);
++			snprintf(str + len, INET6_ADDRSTRLEN + 7 - len, ":%d",
++				 ntohs(ep->in.sin_port));
++			blobmsg_add_string_buffer(buf);
++
++			blobmsg_add_u64(buf, "rx_bytes", peer->state.rx_bytes);
++			blobmsg_add_u64(buf, "tx_bytes", peer->state.tx_bytes);
++			blobmsg_add_u32(buf, "idle", peer->state.idle);
++			blobmsg_add_u32(buf, "last_handshake_sec", peer->state.last_handshake_diff);
++		}
++		if (peer->meta)
++			blobmsg_add_field(buf, BLOBMSG_TYPE_TABLE, "meta", blobmsg_data(peer->meta),
++					  blobmsg_data_len(peer->meta));
++
++		blobmsg_close_table(buf, p);
++	}
++	blobmsg_close_table(buf, c);
++
++
++	c = blobmsg_open_table(buf, "services");
++	vlist_for_each_element(&net->services, s, node) {
++		p = blobmsg_open_table(buf, network_service_name(s));
++
++		if (s->type)
++			blobmsg_add_string(buf, "type", s->type);
++
++		m = blobmsg_open_array(buf, "members");
++		for (size_t i = 0; i < s->n_members; i++)
++			blobmsg_add_string(buf, NULL, network_host_name(s->members[i]));
++		blobmsg_close_array(buf, m);
++
++		if (s->config)
++			blobmsg_add_blob(buf, s->config);
++		blobmsg_close_table(buf, p);
++	}
++	blobmsg_close_table(buf, c);
++}
++
+ static void
+ network_do_update(struct network *net, bool up)
+ {
+diff --git a/network.h b/network.h
+index 57450cc..a726a39 100644
+--- a/network.h
++++ b/network.h
+@@ -104,6 +104,7 @@ static inline const char *network_name(struct network *net)
+ }
+ 
+ void network_get_config(struct network *net, struct blob_buf *buf);
++void network_dump_status(struct blob_buf *buf, struct network *net);
+ bool network_skip_endpoint_route(struct network *net, union network_endpoint *ep);
+ void network_fill_host_addr(union network_addr *addr, uint8_t *key);
+ int network_save_dynamic(struct network *net);
+diff --git a/ubus.c b/ubus.c
+index fbefd4c..8512ebb 100644
+--- a/ubus.c
++++ b/ubus.c
+@@ -52,92 +52,6 @@ ubus_network_del(struct ubus_context *ctx, struct ubus_object *obj,
+ 	return 0;
+ }
+ 
+-static void
+-__network_dump(struct blob_buf *buf, struct network *net)
+-{
+-	struct network_host *local = net->net_config.local_host;
+-	struct network_service *s;
+-	struct network_peer *peer;
+-	void *c, *p, *m;
+-	char *str;
+-
+-	c = blobmsg_open_table(buf, "config");
+-	network_get_config(net, buf);
+-	blobmsg_close_table(buf, c);
+-
+-	if (local) {
+-		blobmsg_add_string(buf, "local_host", network_host_name(local));
+-
+-		peer = &local->peer;
+-		str = blobmsg_alloc_string_buffer(buf, "local_address", INET6_ADDRSTRLEN);
+-		inet_ntop(AF_INET6, &peer->local_addr.in6, str, INET6_ADDRSTRLEN);
+-		blobmsg_add_string_buffer(buf);
+-		if (peer->meta)
+-			blobmsg_add_field(buf, BLOBMSG_TYPE_TABLE, "local_meta",
+-					  blobmsg_data(peer->meta), blobmsg_data_len(peer->meta));
+-	} else {
+-		if (net->net_data_len)
+-			blobmsg_add_u8(buf, "no_local_host", true);
+-	}
+-
+-	if (net->update_refused)
+-		blobmsg_add_u32(buf, "update_refused", net->update_refused);
+-
+-	c = blobmsg_open_table(buf, "peers");
+-	vlist_for_each_element(&net->peers, peer, node) {
+-		union network_endpoint *ep = &peer->state.endpoint;
+-		void *addr;
+-		int len;
+-
+-		p = blobmsg_open_table(buf, network_peer_name(peer));
+-
+-		str = blobmsg_alloc_string_buffer(buf, "address", INET6_ADDRSTRLEN);
+-		inet_ntop(AF_INET6, &peer->local_addr.in6, str, INET6_ADDRSTRLEN);
+-		blobmsg_add_string_buffer(buf);
+-
+-		blobmsg_add_u8(buf, "connected", peer->state.connected);
+-		if (peer->state.connected) {
+-			str = blobmsg_alloc_string_buffer(buf, "endpoint",
+-							  INET6_ADDRSTRLEN + 7);
+-			addr = network_endpoint_addr(ep, &len);
+-			inet_ntop(ep->sa.sa_family, addr, str, INET6_ADDRSTRLEN);
+-			len = strlen(str);
+-			snprintf(str + len, INET6_ADDRSTRLEN + 7 - len, ":%d",
+-				 ntohs(ep->in.sin_port));
+-			blobmsg_add_string_buffer(buf);
+-
+-			blobmsg_add_u64(buf, "rx_bytes", peer->state.rx_bytes);
+-			blobmsg_add_u64(buf, "tx_bytes", peer->state.tx_bytes);
+-			blobmsg_add_u32(buf, "idle", peer->state.idle);
+-			blobmsg_add_u32(buf, "last_handshake_sec", peer->state.last_handshake_diff);
+-		}
+-		if (peer->meta)
+-			blobmsg_add_field(buf, BLOBMSG_TYPE_TABLE, "meta", blobmsg_data(peer->meta),
+-					  blobmsg_data_len(peer->meta));
+-
+-		blobmsg_close_table(buf, p);
+-	}
+-	blobmsg_close_table(buf, c);
+-
+-
+-	c = blobmsg_open_table(buf, "services");
+-	vlist_for_each_element(&net->services, s, node) {
+-		p = blobmsg_open_table(buf, network_service_name(s));
+-
+-		if (s->type)
+-			blobmsg_add_string(buf, "type", s->type);
+-
+-		m = blobmsg_open_array(buf, "members");
+-		for (size_t i = 0; i < s->n_members; i++)
+-			blobmsg_add_string(buf, NULL, network_host_name(s->members[i]));
+-		blobmsg_close_array(buf, m);
+-
+-		if (s->config)
+-			blobmsg_add_blob(buf, s->config);
+-		blobmsg_close_table(buf, p);
+-	}
+-	blobmsg_close_table(buf, c);
+-}
+ 
+ static int
+ ubus_network_get(struct ubus_context *ctx, struct ubus_object *obj,
+@@ -157,12 +71,12 @@ ubus_network_get(struct ubus_context *ctx, struct ubus_object *obj,
+ 		if (!net)
+ 			return UBUS_STATUS_NOT_FOUND;
+ 
+-		__network_dump(&b, net);
++		network_dump_status(&b, net);
+ 	} else {
+ 		c = blobmsg_open_table(&b, "networks");
+ 		avl_for_each_element(&networks, net, node) {
+ 			n = blobmsg_open_table(&b, network_name(net));
+-			__network_dump(&b, net);
++			network_dump_status(&b, net);
+ 			blobmsg_close_table(&b, n);
+ 		}
+ 		blobmsg_close_table(&b, c);

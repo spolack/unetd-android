@@ -4,8 +4,11 @@ An Android VPN client that embeds [unetd](https://github.com/openwrt/unetd)
 natively and acts as the system VPN provider, interoperating with existing
 unetd networks.
 
-**Status:** architecture validated on Linux (M0 passes). The Android app is an
-app shell — real UI, real `VpnService`, fake data — not yet wired to native unetd.
+**Status:** complete enough to test against a real network. The app embeds
+unetd, unet-dht and wireguard-go as native libraries, joins a network as a
+"dynamic" host, and routes the network's prefix through a `VpnService`. The
+native layer is verified on Linux and in CI; **nothing has run on a device
+yet** — see the end of this file for exactly what that means.
 
 ---
 
@@ -73,45 +76,110 @@ PASS: unetd drove wireguard-go over UAPI with no ubus, no VXLAN and no kernel ba
 
 ## The app
 
-`app/` is a Compose app with the real `VpnService` and the real routing policy,
-driven by `FakeUnetRepository` so the UI can be built and reviewed before the
-native layer exists. The UI talks to a `UnetRepository` interface, so swapping
-the fake for the JNI-backed one does not touch the screens.
+### Using it
 
-What is deliberately real already:
+You need a unetd network managed from an OpenWrt router (or any host running
+`unetd` with `unet-cli`), and that router — or any member of the network —
+reachable from the internet on UDP 51819, unetd's global PEX port. If it is
+behind NAT, forward that port.
 
-- `UnetVpnService` establishes the tun with the policy above — `addAddress(/128)`,
-  one `addRoute(<ula>/64)`, MTU 1280 — and exposes `protectSocket(fd)` for the
-  native side. It does **not** call `addDisallowedApplication`, which would
-  exclude our own UID and so break the in-tunnel PEX socket.
-- The `Discovery` card surfaces which of PEX / STUN / DHT are live, and says
-  plainly that raw sockets are unavailable on Android rather than hiding it.
+1. **Setup → Generate key.** The screen shows this device's public key.
+2. **On the router**, add the device to the network with that key, then sign
+   and distribute the new network data as you normally would, e.g.
+   ```
+   unet-cli /etc/unetd/net0.json add-host phone key="<public key from the app>"
+   unet-cli /etc/unetd/net0.json sign
+   ```
+   (Give it `gateway=<some host>` if the phone should reach the rest of the
+   network through one host rather than directly.)
+3. **Back in the app**, enter the network's public key (`auth_key`, the one
+   unetd is configured with on the router) and one or more gateways as
+   `host` or `host:port`. Save.
+4. **Connect.** Android asks once for VPN permission. unetd fetches the signed
+   network data from a gateway, learns its own address from it, and the app
+   re-establishes the tunnel with the real addresses and routes; from then on
+   that happens only if the signed network data changes.
 
-What is stubbed: everything behind `TODO(native)` — starting wireguard-go,
-starting unetd, and the `network_do_update()` callback that should supply the
-addresses and routes instead of the placeholders.
+The home screen shows this device's address, every host in the network with
+handshake age, traffic and endpoint, and which discovery mechanisms are live.
+The **Log** screen shows unetd's debug trace and wireguard-go's log, in order —
+the first place to look when something does not connect.
+
+### What is where
+
+- `UnetVpnService` is the data plane *and* the host of the control plane. It
+  establishes the tun, hands it to wireguard-go (`libwg-go.so`), starts unetd on
+  its own thread (`libunet-android.so`) pointed at the same UAPI socket
+  directory, and adds the network. unetd's interface update — the same payload
+  the `update-cmd` script gets on a router — comes back as a callback and
+  decides whether the tun has to be re-established.
+- `UdhtService` runs unet-dht in the app's `:dht` process. It has to be a
+  separate process because libubox's uloop is a process-wide singleton that
+  unetd already occupies; upstream ships unet-dht as its own daemon for the same
+  reason. It has no socket of its own and relays through unetd's global PEX
+  socket over a unix socket in the app's data dir, so it needs no `protect()`.
+- `nativebridge/` holds the three JNI objects: `Unetd` (the library wrapper in
+  `native/core`), `WgGo` (wireguard-go), `Udht`.
+- The UI talks to a `UnetRepository`; `NativeUnetRepository` reads the service's
+  `TunnelRuntime` state flow and starts/stops the service. `FakeUnetRepository`
+  still drives the Compose previews.
+
+### Routing policy, now real
+
+`addAddress(local, 128)` plus one `addRoute(<network prefix>, 64)`, plus the
+non-derivable IPv4/IPv6 subnets and host addresses from the signed network data,
+MTU 1280. unetd derives every host address from its public key (`0xfd ||
+siphash(network id)`, host part `siphash(pubkey)`), so the `/64` covers every
+present and future peer and **peer churn never touches the tun**. The tunnel is
+re-established only when unetd's interface update differs from what the tun was
+established with: the very first connection (before the network data is known
+there is only a placeholder address), and afterwards only if the signed network
+data changes addresses or subnets.
+
+`addDisallowedApplication` is deliberately not used — it would exclude the
+per-network PEX socket, which is bound to the in-tunnel address and must go
+*through* the tunnel. Sockets that must bypass it are `protect()`ed one by one:
+unetd's global PEX socket, STUN socket and local-address probe via the hook in
+patch 0006, and wireguard-go's UDP sockets at bind time via the control function
+in `patches/wireguard-go/0001` — which keeps them protected across the rebinds
+that every `listen_port` write triggers.
 
 ```
-./gradlew :app:assembleDebug      # → app/build/outputs/apk/debug/app-debug.apk
+./scripts/apply-patches.sh         # patch the unetd and wireguard-go submodules
+./gradlew :app:assembleDebug       # → app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The Gradle build runs CMake with the NDK on `native/CMakeLists.txt`, which
+builds libubox (subset) + json-c + unetd + unet-dht + the wrapper into
+`libunet-android.so` and cross-compiles `libwg-go.so` with Go, using the NDK's
+clang as the C compiler, for arm64-v8a, armeabi-v7a and x86_64. Go and the NDK
+have to be available: `go` on PATH (or `GO_EXECUTABLE=/path/to/go`), the NDK is
+installed by AGP on demand.
 
 ## Layout
 
 ```
-app/                Compose app, VpnService, fake repository
-patches/unetd/      ordered, individually upstreamable patch series
-third_party/unetd   submodule, pinned to 7c3213d
-third_party/libubox submodule
-scripts/            apply-patches.sh, build-host.sh
-tests/host/         M0 harness
+app/                        Compose app, VpnService, DHT service, JNI bridges
+native/CMakeLists.txt       the native build, for the NDK and for the host
+native/core/                unetd as a library: uloop thread, command channel, status, log ring
+native/jni/                 JNI bindings for unetd and unet-dht
+native/libwg-go/            wireguard-go + JNI glue, built with Go (c-shared)
+patches/unetd/              ordered, individually upstreamable patch series (8)
+patches/wireguard-go/       same, for wireguard-go (2)
+third_party/unetd           submodule, pinned to 7c3213d (upstream HEAD)
+third_party/libubox         submodule (upstream HEAD)
+third_party/wireguard-go    submodule, pinned to ecfc5a8 (upstream HEAD)
+third_party/json-c          submodule, json-c-0.19-20260627
+scripts/                    apply-patches.sh, build-host.sh, build-libwg-go.sh
+tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
 ```
 
 ## CI
 
 | Workflow | What it does |
 |---|---|
-| `.github/workflows/android.yml` | Builds the debug APK and uploads it as an artifact; a second job runs lint and unit tests. |
-| `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go, runs M0 — once normally and once with `CAP_NET_RAW` dropped. |
+| `.github/workflows/android.yml` | Applies the patch series, builds the debug APK — native libraries included — and uploads it as an artifact, listing the `.so` files it contains; a second job runs lint and unit tests. |
+| `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped) and M1a. |
 
 Upstream is vendored as a submodule and the Android changes are kept as an
 ordered patch series rather than a fork, so each one stays submittable to
@@ -126,6 +194,16 @@ upstream on its own.
 | `0003` network: tolerate a missing ifindex | `if_nametoindex()` failure aborted setup, but only VXLAN consumes `ifindex`. A `VpnService` tun may have no resolvable netdev name. |
 | `0004` pex: make raw sockets optional | The big one — see below. |
 | `0005` wg-user: runtime UAPI socket directory | The path is only known at runtime on Android, and `/data/data/<pkg>` is wrong for secondary users and work profiles. Also fixes an unchecked `snprintf()` truncation against the 108-byte `sun_path` limit. |
+| `0006` platform: hooks for socket protection and interface updates | `protect_socket()` for the sockets that must bypass the tunnel the process itself provides; `network_update()` as an in-process replacement for `update-cmd`, since fork+exec is unavailable to an app on Android 10+. Both optional; nothing changes when unset. |
+| `0007` network: expose the status dump without ubus | `__network_dump()` was static in `ubus.c`, so a build without ubus had no way to report peers, endpoints or counters at all. |
+| `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`, so an app can run the DHT node from its own entry point. |
+
+And for wireguard-go (`patches/wireguard-go/`):
+
+| Patch | Why |
+|---|---|
+| `0001` conn: `AddControlFn` | Lets the embedder apply per-socket configuration before every bind. `Device.BindUpdate()` reopens the sockets on each `listen_port` write, so a `protect()` applied once after start silently stops holding. |
+| `0002` ipc: `SetSocketDirectory` | wireguard-android bakes `/data/data/<pkg>/cache/wireguard` in with a linker flag, which is only right for the primary Android user. |
 
 ### Why patch 0004 matters
 
@@ -164,6 +242,13 @@ real WireGuard port with no spoofing and no capability at all.
   does not wake `epoll_wait`, so cross-thread shutdown needs its own eventfd.
   unetd and unet-dht therefore cannot share a process.
 
+## What the host tests prove
+
+| Test | What it exercises |
+|---|---|
+| M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
+| M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
+
 ## Environment note
 
 This was developed in a container whose kernel is booted with `ipv6.disable=1`,
@@ -180,17 +265,16 @@ See `NOTICE`.
 
 ## A note on what is verified
 
-The native side (patch series, host build, M0) is verified locally and in CI,
-and is reproducible from a clean checkout. M0 also passes in CI with
-`CAP_NET_RAW` dropped, which is the case that matters for Android and which a
-container holding that capability cannot exercise.
+The native side — patch series, host build, M0, M1a — is verified locally and in
+CI, and is reproducible from a clean checkout. M0 also passes in CI with
+`CAP_NET_RAW` dropped, which is the case that matters for Android.
 
-The Android app builds, lints and passes unit tests in CI. It has **not** been
-run on a device or emulator, so the UI is verified only as far as compiling and
-lint go — nothing here has been seen rendering. `UnetVpnService` in particular
-has never actually established a tunnel.
-
-One development note: the container this was written in blocks `dl.google.com`,
-where Google's Maven redirects, so AGP and AndroidX cannot be resolved there and
-`./gradlew` only works in CI. Allowing that host makes local Android builds work
-too.
+The Android app builds (Kotlin, and the native libraries for three ABIs), lints
+and passes unit tests in CI. It has **not** been run on a device or emulator. In
+particular, none of the following has been seen working: `VpnService.protect()`
+from the Go control function, wireguard-go reading a `VpnService` tun, unetd
+fetching network data over the global PEX socket from a phone, the DHT node in
+its own process, or the re-establish dance when the first interface update
+arrives. Each is built on code paths that work elsewhere (wireguard-android,
+upstream unetd on routers), but the combination is new and the first device run
+will tell. The **Log** screen exists for exactly that moment.

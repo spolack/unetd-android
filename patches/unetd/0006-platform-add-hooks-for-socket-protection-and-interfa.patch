@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 16:10:13 +0000
+Subject: [PATCH] platform: add hooks for socket protection and interface
+ updates
+
+Embedding unetd in an Android VpnService needs two things a router daemon
+does not: a way to exempt specific sockets from the tunnel the process itself
+provides, and a way to receive the interface update in-process, because
+fork+exec of update-cmd is unavailable to an app on Android 10 and later.
+
+Add an optional struct unetd_platform_ops with two hooks. protect_socket() is
+called for the sockets that must bypass the tunnel: the global PEX socket,
+the STUN socket and the local address probe. It is deliberately not called
+for the per-network PEX socket, which is bound to the in-tunnel address and
+has to go through the tunnel. network_update() receives the same blobmsg that
+update-cmd would get. With unetd_platform left unset nothing changes.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ network.c  |  3 +++
+ pex-msg.c  |  3 +++
+ pex-stun.c |  2 ++
+ platform.h | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ unetd.h    |  1 +
+ utils.c    |  4 ++++
+ 6 files changed, 58 insertions(+)
+ create mode 100644 platform.h
+
+diff --git a/network.c b/network.c
+index 2844b39..7bc2c45 100644
+--- a/network.c
++++ b/network.c
+@@ -520,6 +520,9 @@ network_do_update(struct network *net, bool up)
+ 		free(s);
+ 	}
+ 
++	if (unetd_platform && unetd_platform->network_update)
++		unetd_platform->network_update(net, b.head);
++
+ 	if (net->config.update_cmd) {
+ 		const char *argv[] = { net->config.update_cmd, NULL, NULL };
+ 		int pid, stat;
+diff --git a/pex-msg.c b/pex-msg.c
+index 378d948..79aceb1 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -12,6 +12,7 @@
+ #include <libubox/uloop.h>
+ #include <libubox/usock.h>
+ #include "pex-msg.h"
++#include "platform.h"
+ #include "chacha20.h"
+ #include "auth-data.h"
+ 
+@@ -661,6 +662,8 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+ 	if (fd < 0)
+ 		goto close_urandom;
+ 
++	unetd_platform_protect_socket(fd);
++
+ 	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+ 	fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+ 
+diff --git a/pex-stun.c b/pex-stun.c
+index 210cf4b..382ca90 100644
+--- a/pex-stun.c
++++ b/pex-stun.c
+@@ -109,6 +109,8 @@ network_stun_open_socket(struct network *net)
+ 		return;
+ 	}
+ 
++	unetd_platform_protect_socket(fd);
++
+ 	stun->socket.fd = fd;
+ 	uloop_fd_add(&stun->socket, ULOOP_READ);
+ 	stun->wgport_disabled = true;
+diff --git a/platform.h b/platform.h
+new file mode 100644
+index 0000000..7fc3359
+--- /dev/null
++++ b/platform.h
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2026 the unetd-android authors
++ */
++#ifndef __UNETD_PLATFORM_H
++#define __UNETD_PLATFORM_H
++
++struct network;
++struct blob_attr;
++
++/*
++ * Hooks for embedding unetd in an environment that is not a Linux router.
++ *
++ * Both are optional. A platform that does not need them leaves unetd_platform
++ * unset and gets the historical behaviour.
++ */
++struct unetd_platform_ops {
++	/*
++	 * Called with every socket whose traffic must not be routed through
++	 * the tunnel unetd manages: the global PEX socket, the STUN socket and
++	 * the local address probe. On Android these need VpnService.protect(),
++	 * since the app's own traffic would otherwise loop into its own tunnel.
++	 *
++	 * Deliberately not called for the per-network PEX socket, which is
++	 * bound to the in-tunnel address and must go through the tunnel.
++	 */
++	void (*protect_socket)(int fd);
++
++	/*
++	 * Receives the interface update that would otherwise be passed to
++	 * update-cmd: the same blobmsg, with ifname, link-up, ipaddr, ip6addr,
++	 * routes and routes6. For a platform where fork+exec is unavailable.
++	 */
++	void (*network_update)(struct network *net, struct blob_attr *data);
++};
++
++extern const struct unetd_platform_ops *unetd_platform;
++
++static inline void unetd_platform_protect_socket(int fd)
++{
++	if (fd >= 0 && unetd_platform && unetd_platform->protect_socket)
++		unetd_platform->protect_socket(fd);
++}
++
++#endif
+diff --git a/unetd.h b/unetd.h
+index a218d0b..4830a85 100644
+--- a/unetd.h
++++ b/unetd.h
+@@ -14,6 +14,7 @@
+ #include <udebug.h>
+ #endif
+ #include "utils.h"
++#include "platform.h"
+ #include "siphash.h"
+ #include "wg.h"
+ #include "pex-msg.h"
+diff --git a/utils.c b/utils.c
+index ea8b676..a3ad3b9 100644
+--- a/utils.c
++++ b/utils.c
+@@ -21,6 +21,8 @@
+ 
+ #include "unetd.h"
+ 
++const struct unetd_platform_ops *unetd_platform;
++
+ int network_get_endpoint(union network_endpoint *dest, int af, const char *str,
+ 			 int default_port, int idx)
+ {
+@@ -146,6 +148,8 @@ int network_get_local_addr(void *local, const union network_endpoint *target)
+ 	if (fd < 0)
+ 		return -1;
+ 
++	unetd_platform_protect_socket(fd);
++
+ 	if (connect(fd, (const struct sockaddr *)target, len))
+ 		goto out;
+ 

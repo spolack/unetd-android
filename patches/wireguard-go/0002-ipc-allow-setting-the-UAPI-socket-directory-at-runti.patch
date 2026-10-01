@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Thu, 1 Oct 2026 16:12:11 +0000
+Subject: [PATCH] ipc: allow setting the UAPI socket directory at runtime
+
+wireguard-android bakes the directory in with a linker flag, which hardcodes
+/data/data/<package>, a path that is only right for the primary Android user.
+Add SetSocketDirectory so an embedder can pass the directory it actually has
+at runtime.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ ipc/uapi_unix.go | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/ipc/uapi_unix.go b/ipc/uapi_unix.go
+index dcce167..82dc12a 100644
+--- a/ipc/uapi_unix.go
++++ b/ipc/uapi_unix.go
+@@ -28,6 +28,13 @@ const (
+ // flag in wireguard-android.
+ var socketDirectory = "/var/run/wireguard"
+ 
++// SetSocketDirectory changes where UAPI sockets are created. For embedders
++// whose directory is only known at runtime, such as an Android app's data
++// directory, which differs per Android user. Call it before UAPIOpen.
++func SetSocketDirectory(dir string) {
++	socketDirectory = dir
++}
++
+ func sockPath(iface string) string {
+ 	return fmt.Sprintf("%s/%s.sock", socketDirectory, iface)
+ }

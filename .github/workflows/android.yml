@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # Latest GA JDK, per the repo policy. Gradle 9.8 is the first release that
       # runs on Java 27; the app still compiles to Java 17 bytecode.
@@ -25,17 +27,39 @@ jobs:
           distribution: temurin
           java-version: "27"
 
-      # Accepts the SDK licences. The platform and build-tools come from
-      # compileSdk/buildToolsVersion in app/build.gradle.kts, which AGP installs
-      # on demand, so that file stays the single source of truth for both.
+      # libwg-go (wireguard-go) is cross-compiled by Go from inside the CMake
+      # build, with the NDK's clang as the C compiler.
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: native/libwg-go/go.sum
+
+      # Accepts the SDK licences. The platform, build-tools, NDK and CMake come
+      # from app/build.gradle.kts, which AGP installs on demand, so that file
+      # stays the single source of truth for all of them.
       - name: Set up the Android SDK
         uses: android-actions/setup-android@v4
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # unetd and wireguard-go are pristine upstream submodules; the Android
+      # changes are a patch series applied at build time.
+      - name: Apply the patch series
+        run: ./scripts/apply-patches.sh
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Report native libraries
+        run: |
+          mkdir -p /tmp/apk && cd /tmp/apk
+          unzip -o -q "$GITHUB_WORKSPACE/app/build/outputs/apk/debug/app-debug.apk" 'lib/*'
+          echo "### Native libraries" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find lib -type f -printf '%-40p %10s bytes\n' | sort >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report APK size
         run: |
@@ -57,6 +81,8 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # Latest GA JDK, per the repo policy. Gradle 9.8 is the first release that
       # runs on Java 27; the app still compiles to Java 17 bytecode.
@@ -66,11 +92,20 @@ jobs:
           distribution: temurin
           java-version: "27"
 
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: native/libwg-go/go.sum
+
       - name: Set up the Android SDK
         uses: android-actions/setup-android@v4
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply the patch series
+        run: ./scripts/apply-patches.sh
 
       - name: Lint
         run: ./gradlew :app:lintDebug --stacktrace
