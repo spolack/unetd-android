@@ -8,15 +8,18 @@ on:
 jobs:
   m0-uapi-hinge:
     name: unetd drives wireguard-go over UAPI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
+          # wireguard-go is cloned at build time, so there is no go.sum at setup
+          # and the module cache could never hit; it only produced a warning.
+          cache: false
 
       - name: Install build dependencies
         run: |
