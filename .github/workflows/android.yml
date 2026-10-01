@@ -49,31 +49,60 @@ jobs:
       - name: Apply the patch series
         run: ./scripts/apply-patches.sh
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
-
-      - name: Report native libraries
+      # The release signing key lives in repository secrets (see README). When
+      # they are present, debug and release are signed with the same key so any
+      # CI APK updates any other in place; without them (forks, PRs) the build
+      # still runs, with the default debug key and an unsigned release.
+      - name: Set up signing
+        if: ${{ secrets.UNETD_KEYSTORE_BASE64 != '' }}
+        env:
+          UNETD_KEYSTORE_BASE64: ${{ secrets.UNETD_KEYSTORE_BASE64 }}
         run: |
+          echo "$UNETD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/unetd-release.jks"
+          {
+            echo "UNETD_KEYSTORE_FILE=$RUNNER_TEMP/unetd-release.jks"
+            echo "UNETD_KEYSTORE_PASSWORD=${{ secrets.UNETD_KEYSTORE_PASSWORD }}"
+            echo "UNETD_KEY_ALIAS=${{ secrets.UNETD_KEY_ALIAS }}"
+            echo "UNETD_KEY_PASSWORD=${{ secrets.UNETD_KEY_PASSWORD }}"
+          } >> "$GITHUB_ENV"
+          echo "signing key configured"
+
+      - name: Build debug and release APKs
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
+
+      - name: Report APKs
+        run: |
+          echo "### APKs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release*.apk; do
+            ls -l "$apk"
+            echo "\`$(basename "$apk")\` — $(du -h "$apk" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          "$apksigner" verify --print-certs app/build/outputs/apk/release/app-release*.apk 2>&1 \
+            | grep -i "SHA-256\|DOES NOT VERIFY\|not signed" >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           mkdir -p /tmp/apk && cd /tmp/apk
-          unzip -o -q "$GITHUB_WORKSPACE/app/build/outputs/apk/debug/app-debug.apk" 'lib/*'
-          echo "### Native libraries" >> "$GITHUB_STEP_SUMMARY"
+          unzip -o -q "$GITHUB_WORKSPACE"/app/build/outputs/apk/release/app-release*.apk 'lib/*'
+          echo "### Native libraries (release)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           find lib -type f -printf '%-40p %10s bytes\n' | sort >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Report APK size
-        run: |
-          apk=app/build/outputs/apk/debug/app-debug.apk
-          ls -l "$apk"
-          echo "### Debug APK" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$(basename "$apk")\` — $(du -h "$apk" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-release-apk
+          path: app/build/outputs/apk/release/app-release*.apk
           if-no-files-found: error
 
   lint:

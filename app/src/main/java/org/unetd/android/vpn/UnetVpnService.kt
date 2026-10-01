@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -155,6 +156,16 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
             .setMtu(1280)
             .setBlocking(true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+
+        // Split tunnel by routing: only unetd's prefixes go in, never a default
+        // route. Android adds a rule on top of routing, though: a family (IPv4 or
+        // IPv6) for which the VPN adds no address, route or DNS server is BLOCKED
+        // for every app using the VPN, not passed through. The placeholder tun has
+        // only an IPv6 address, and a host without an IPv4 ipaddr would be in the
+        // same position permanently, so both families are allowed explicitly and
+        // unrouted destinations leave via the underlying network.
+        builder.allowFamily(OsConstants.AF_INET)
+        builder.allowFamily(OsConstants.AF_INET6)
 
         // Deliberately no addDisallowedApplication(packageName): that would exclude
         // this whole UID from the tunnel, including unetd's per-network PEX socket,

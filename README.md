@@ -136,6 +136,17 @@ established with: the very first connection (before the network data is known
 there is only a placeholder address), and afterwards only if the signed network
 data changes addresses or subnets.
 
+**It is a split tunnel, by construction.** No default route is ever added, no
+DNS server is pushed, and there are no per-app rules: only the network's `/64`
+and the subnets and addresses announced in the signed data enter the tun, and
+everything else keeps using the device's normal connection. One Android rule
+sits on top of routing and has to be dealt with explicitly: a VPN that adds no
+address, route or DNS server of an address family gets that whole family
+*blocked* for its apps, not passed through (`VpnService.Builder.allowFamily`).
+The tunnel starts with an IPv6-only placeholder, and a host without an IPv4
+`ipaddr` stays IPv6-only, so both families are allowed explicitly. Android still
+shows its VPN indicator while the tunnel is up; that is unavoidable.
+
 `addDisallowedApplication` is deliberately not used — it would exclude the
 per-network PEX socket, which is bound to the in-tunnel address and must go
 *through* the tunnel. Sockets that must bypass it are `protect()`ed one by one:
@@ -147,7 +158,27 @@ that every `listen_port` write triggers.
 ```
 ./scripts/apply-patches.sh         # patch the unetd and wireguard-go submodules
 ./gradlew :app:assembleDebug       # → app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease     # → app/build/outputs/apk/release/ (minified)
 ```
+
+### Signing
+
+CI signs both build types with one release key, so any CI-built APK installs
+over any other. The key is not in the repository; it comes from four repository
+secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `UNETD_KEYSTORE_BASE64` | `base64 -w0 unetd-release.jks` |
+| `UNETD_KEYSTORE_PASSWORD` | the keystore password |
+| `UNETD_KEY_ALIAS` | `unetd` |
+| `UNETD_KEY_PASSWORD` | the key password |
+
+Without them the build still succeeds: debug gets the default debug key and the
+release APK is unsigned. Locally, export the same four names as environment
+variables (`UNETD_KEYSTORE_FILE` is the path to the `.jks`). Install the
+**release** APK on devices; `versionCode` is the commit count, so every build
+on `main` is an update of the previous one.
 
 The Gradle build runs CMake with the NDK on `native/CMakeLists.txt`, which
 builds libubox (subset) + json-c + unetd + unet-dht + the wrapper into

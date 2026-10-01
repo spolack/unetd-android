@@ -9,6 +9,27 @@ plugins {
 // and unetd must be built with a matching RUNSTATEDIR for wg-user.c to find it.
 val unetdPackageName: String = providers.gradleProperty("unetd.packageName").get()
 
+// Each CI build must be installable over the previous one, so versionCode is
+// the commit count on the current branch (monotonic on main) and versionName
+// carries the short SHA. Outside a git checkout both fall back to constants.
+fun git(vararg args: String): String? = try {
+    val proc = ProcessBuilder("git", *args).directory(rootDir).redirectErrorStream(true).start()
+    val out = proc.inputStream.bufferedReader().readText().trim()
+    if (proc.waitFor() == 0 && out.isNotEmpty()) out else null
+} catch (_: Exception) {
+    null
+}
+val commitCount: Int = git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
+val shortSha: String = git("rev-parse", "--short", "HEAD") ?: "local"
+
+// Release signing from the environment (CI: GitHub secrets). When every variable
+// is present, debug and release are both signed with this key, so any CI build
+// updates any other in place. When absent, local builds keep the default debug
+// key and release stays unsigned.
+val signingEnv = listOf("UNETD_KEYSTORE_FILE", "UNETD_KEYSTORE_PASSWORD", "UNETD_KEY_ALIAS", "UNETD_KEY_PASSWORD")
+    .associateWith { System.getenv(it) }
+val hasSigning = signingEnv.values.all { !it.isNullOrBlank() }
+
 android {
     namespace = unetdPackageName
     compileSdk = 37
@@ -23,8 +44,8 @@ android {
         // 26 gives us VpnService.Builder.setMetered() and foreground service types.
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0-dev"
+        versionCode = commitCount
+        versionName = "0.2.0-dev+$shortSha"
 
         ndk {
             // Go (libwg-go) and the NDK agree on these three; x86 is dropped as
@@ -55,15 +76,25 @@ android {
         }
     }
 
+    if (hasSigning) {
+        signingConfigs.create("release") {
+            storeFile = file(signingEnv.getValue("UNETD_KEYSTORE_FILE")!!)
+            storePassword = signingEnv.getValue("UNETD_KEYSTORE_PASSWORD")
+            keyAlias = signingEnv.getValue("UNETD_KEY_ALIAS")
+            keyPassword = signingEnv.getValue("UNETD_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            if (hasSigning) signingConfig = signingConfigs.getByName("release")
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Left unsigned: CI publishes the debug APK for now.
+            if (hasSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
 

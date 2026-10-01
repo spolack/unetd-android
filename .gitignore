@@ -7,3 +7,5 @@ app/build/
 app/.cxx/
 native/libwg-go/build/
 .kotlin/
+*.jks
+*.keystore
