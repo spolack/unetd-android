@@ -1,6 +1,7 @@
 package org.unetd.android.config
 
 import android.content.Context
+import androidx.core.content.edit
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -187,13 +188,16 @@ object ConfigStore {
         prefs(context).getString(KEY_CONFIG, null)?.let { TunnelConfig.fromJson(it) }
 
     fun save(context: Context, config: TunnelConfig) {
-        prefs(context).edit().putString(KEY_CONFIG, config.toJson()).remove(KEY_LAST_TUN).apply()
+        prefs(context).edit {
+            putString(KEY_CONFIG, config.toJson())
+            remove(KEY_LAST_TUN)
+        }
     }
 
     fun loadLastTun(context: Context): TunSettings? =
         prefs(context).getString(KEY_LAST_TUN, null)?.let { TunSettings.fromJson(it) }
 
     fun saveLastTun(context: Context, tun: TunSettings) {
-        prefs(context).edit().putString(KEY_LAST_TUN, tun.toJson()).apply()
+        prefs(context).edit { putString(KEY_LAST_TUN, tun.toJson()) }
     }
 }

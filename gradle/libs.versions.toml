@@ -1,6 +1,6 @@
 # Policy: always the latest *stable* release of everything here (see CLAUDE.md).
 [versions]
-agp = "9.4.0"
+agp = "9.4.1"
 # AGP 9 compiles Kotlin itself ("built-in Kotlin") and only bundles a minimum
 # Kotlin Gradle plugin; the root build file pins this version on the buildscript
 # classpath so the compiler and the Compose compiler plugin below always match.
