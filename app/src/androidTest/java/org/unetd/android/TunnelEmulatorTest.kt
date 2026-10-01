@@ -111,9 +111,12 @@ class TunnelEmulatorTest {
         }
         assertInternet("with the real routes installed")
 
+        // Plain HTTP over a raw socket: the platform's cleartext policy would
+        // refuse HttpURLConnection, and what matters here is the tunnel.
         val t0 = System.currentTimeMillis()
-        val code = httpGet("http://$router:8080/")
-        assertEquals("HTTP through the tunnel to the router", 200, code)
+        val reply = rawHttpGet(router!!, 8080, "/")
+        assertTrue("HTTP through the tunnel to the router, got: $reply", reply.startsWith("HTTP/1.0 200") || reply.startsWith("HTTP/1.1 200"))
+        assertTrue("the router's page came through the tunnel", reply.contains("hello from the router"))
         println("tunnel round trip: ${System.currentTimeMillis() - t0} ms")
     }
 
@@ -151,6 +154,16 @@ class TunnelEmulatorTest {
             fail("HTTP $probeUrl failed $stage ($host -> $resolved): $e"); -1
         }
         assertTrue("HTTP $probeUrl answered $code $stage", code in 200..299)
+    }
+
+    private fun rawHttpGet(host: String, port: Int, path: String): String {
+        java.net.Socket().use { socket ->
+            socket.soTimeout = 10_000
+            socket.connect(java.net.InetSocketAddress(host, port), 10_000)
+            socket.getOutputStream().write("GET $path HTTP/1.0\r\nHost: $host\r\n\r\n".toByteArray())
+            socket.getOutputStream().flush()
+            return socket.getInputStream().readBytes().toString(Charsets.ISO_8859_1)
+        }
     }
 
     private fun udpEcho(host: String, port: Int, payload: String): String? {
