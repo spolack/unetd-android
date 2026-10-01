@@ -17,6 +17,9 @@ adb install -r "$TEST_APK"
 # The consent dialog cannot be clicked on a headless emulator; this is the
 # app-op the dialog would set (see isVpnPreConsented in the framework's Vpn.java).
 adb shell appops set "$PKG" ACTIVATE_VPN allow
+# Android 17: packets to local-network addresses (the host is 10.0.2.2) need
+# this runtime permission, which the test cannot click through either.
+adb shell pm grant "$PKG" android.permission.ACCESS_LOCAL_NETWORK || true
 adb logcat -c
 
 set -- -w -r

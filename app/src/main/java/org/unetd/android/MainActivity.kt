@@ -30,6 +30,13 @@ class MainActivity : ComponentActivity() {
     /** Only affects whether the tunnel's notification is shown; the service runs either way. */
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
+    /**
+     * Android 17 blocks every packet to a local-network address (EPERM on
+     * sendto) until this is granted. A gateway on the LAN, or the emulator's
+     * host, is exactly such an address, so it is asked for before connecting.
+     */
+    private val localNetworkPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -51,6 +58,12 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        if (Build.VERSION.SDK_INT >= 37 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED
+        ) {
+            localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
         }
 
         val consent = VpnService.prepare(this)

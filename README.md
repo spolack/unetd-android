@@ -95,7 +95,10 @@ behind NAT, forward that port.
 3. **Back in the app**, enter the network's public key (`auth_key`, the one
    unetd is configured with on the router) and one or more gateways as
    `host` or `host:port`. Save.
-4. **Connect.** Android asks once for VPN permission. unetd fetches the signed
+4. **Connect.** Android asks once for VPN permission, and on Android 17 and
+   newer also for *local network* access: since API 37 every packet to a
+   LAN address is refused (`EPERM`) until that permission is granted, and a
+   gateway on your LAN, or the emulator's host, is such an address. unetd fetches the signed
    network data from a gateway, learns its own address from it, and the app
    re-establishes the tunnel with the real addresses and routes; from then on
    that happens only if the signed network data changes.
