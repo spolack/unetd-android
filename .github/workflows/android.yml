@@ -216,20 +216,12 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: |
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            # The consent dialog cannot be clicked; this is the app-op it would set.
-            adb shell appops set org.unetd.android ACTIVATE_VPN allow
-            adb logcat -c
-            adb shell am instrument -w -r \
-              -e authKey '${{ steps.router.outputs.authKey }}' \
-              -e phoneKey '${{ steps.router.outputs.phoneKey }}' \
-              -e routerAddress '${{ steps.router.outputs.routerAddress }}' \
-              org.unetd.android.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.txt
-            adb logcat -d > logcat.txt
-            grep -q "INSTRUMENTATION_STATUS_CODE: -1\|INSTRUMENTATION_STATUS_CODE: -2\|FAILURES\|INSTRUMENTATION_FAILED\|Process crashed" instrument.txt && { echo "instrumented tests failed"; exit 1; }
-            grep -q "INSTRUMENTATION_RESULT: stream=" instrument.txt
+          # Each line of `script` is its own shell command, hence one script.
+          script: ./tests/emulator/run-tests.sh
+        env:
+          AUTH_KEY: ${{ steps.router.outputs.authKey }}
+          PHONE_KEY: ${{ steps.router.outputs.phoneKey }}
+          ROUTER_ADDRESS: ${{ steps.router.outputs.routerAddress }}
 
       - name: Collect router logs
         if: always()
