@@ -46,6 +46,8 @@ android {
         targetSdk = 37
         versionCode = commitCount
         versionName = "0.2.0-dev+$shortSha"
+        // The emulator job (CI) runs app/src/androidTest against a router on the runner.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             // Go (libwg-go) and the NDK agree on these three; x86 is dropped as
@@ -127,4 +129,10 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.core.ktx)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.junit)
 }

@@ -17,8 +17,10 @@ Look versions up from a primary source rather than from memory:
 - JDK: `https://api.adoptium.net/v3/info/available_releases`, checked against
   Gradle's Java compatibility matrix
 - GitHub Actions: the action's tags and its `action.yml` at that tag
-- NDK: `https://developer.android.com/ndk/downloads` (the LTS line), CMake and
-  platform packages: `sdkmanager --list`
+- NDK: `https://developer.android.com/ndk/downloads` (the LTS line), CMake,
+  platform and emulator system-image packages: `sdkmanager --list` (the names
+  carry a minor version now, e.g. `platforms;android-37.0`)
+- androidx.test: `https://developer.android.com/jetpack/androidx/releases/test`
 - Go: `https://go.dev/dl/?mode=json`
 - json-c, wireguard-go: upstream tags / HEAD (`git ls-remote`)
 

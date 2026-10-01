@@ -152,3 +152,102 @@ jobs:
           path: |
             app/build/reports/
           if-no-files-found: ignore
+
+  emulator:
+    name: Emulator - tunnel end to end
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # The emulator needs KVM; hosted Linux runners have it once the device
+      # node is made accessible (from the emulator action's README).
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Set up JDK 27
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "27"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: native/libwg-go/go.sum
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply the patch series
+        run: ./scripts/apply-patches.sh
+
+      # The router side: unetd + wireguard-go for the host, from the same
+      # patched sources, the way the host tests build them.
+      - name: Build unetd and wireguard-go for the runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build libjson-c-dev
+          ./scripts/build-host.sh
+
+      - name: Start the router
+        id: router
+        run: sudo -E env GITHUB_OUTPUT="$GITHUB_OUTPUT" ./tests/emulator/router.sh "$PWD/build/host" /tmp/unetd-router
+
+      - name: Build the app and the test APK
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+
+      # api-level is the SDK's own name for the platform and system image
+      # (platforms;android-37.0, system-images;android-37.0;google_apis;x86_64).
+      - name: Run the tunnel test on an emulator
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: "37.0"
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            # The consent dialog cannot be clicked; this is the app-op it would set.
+            adb shell appops set org.unetd.android ACTIVATE_VPN allow
+            adb logcat -c
+            adb shell am instrument -w -r \
+              -e authKey '${{ steps.router.outputs.authKey }}' \
+              -e phoneKey '${{ steps.router.outputs.phoneKey }}' \
+              -e routerAddress '${{ steps.router.outputs.routerAddress }}' \
+              org.unetd.android.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.txt
+            adb logcat -d > logcat.txt
+            grep -q "INSTRUMENTATION_STATUS_CODE: -1\|INSTRUMENTATION_STATUS_CODE: -2\|FAILURES\|INSTRUMENTATION_FAILED\|Process crashed" instrument.txt && { echo "instrumented tests failed"; exit 1; }
+            grep -q "INSTRUMENTATION_RESULT: stream=" instrument.txt
+
+      - name: Collect router logs
+        if: always()
+        run: |
+          mkdir -p emulator-logs
+          sudo cp /tmp/unetd-router/*.log emulator-logs/ 2>/dev/null || true
+          cp instrument.txt logcat.txt emulator-logs/ 2>/dev/null || true
+          sudo chown -R "$USER" emulator-logs
+          echo "### Emulator test" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E "^INSTRUMENTATION_STATUS: (test|stack)=|^INSTRUMENTATION_RESULT|^OK|^FAILURES|^Time:" instrument.txt 2>/dev/null | sort -u | head -40 >> "$GITHUB_STEP_SUMMARY" || true
+          grep -E "netdiag|tun:|http |dns |unetd-android" logcat.txt 2>/dev/null | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload emulator logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-logs
+          path: emulator-logs/
+          if-no-files-found: ignore

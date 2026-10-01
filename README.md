@@ -210,6 +210,7 @@ tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
 | Workflow | What it does |
 |---|---|
 | `.github/workflows/android.yml` | Applies the patch series, builds the debug APK — native libraries included — and uploads it as an artifact, listing the `.so` files it contains; a second job runs lint and unit tests. |
+| `.github/workflows/android.yml`, job `emulator` | Runs the app on a stock Android emulator (API 37, x86_64, KVM) against a unetd router started on the runner (`tests/emulator/router.sh`): internet before the VPN, internet with the VPN up but nothing routed yet, the WireGuard handshake and HTTP through the tunnel, and internet after disconnecting. |
 | `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped) and M1a. |
 
 Upstream is vendored as a submodule and the Android changes are kept as an
@@ -279,6 +280,22 @@ real WireGuard port with no spoofing and no capability at all.
 |---|---|
 | M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
 | M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
+
+## The emulator test
+
+`app/src/androidTest/.../TunnelEmulatorTest.kt` drives the app the way a user
+does, in the app's own process, so its sockets sit inside the VPN like any
+app's. Four ordered tests:
+
+| Test | Proves |
+|---|---|
+| `t1_baselineInternet` | DNS and HTTP work before any VPN. |
+| `t2_splitTunnelKeepsInternet` | With the VPN up on the placeholder tun (no routes yet), the internet still works. Android blocks a whole address family for a VPN that adds nothing of that family, which the service counters with `allowFamily`; this is the regression test. |
+| `t3_tunnelCarriesTraffic` | unetd fetched the signed data from the router on the runner, the tunnel re-established with the real addresses, WireGuard handshook, and HTTP to the router's in-tunnel address answers through it. |
+| `t4_disconnectRemovesVpn` | Disconnecting in the app takes the VPN down and leaves the internet working. |
+
+The VPN consent dialog cannot be clicked on a headless emulator; CI grants the
+same app-op the dialog sets: `adb shell appops set org.unetd.android ACTIVATE_VPN allow`.
 
 ## Environment note
 
