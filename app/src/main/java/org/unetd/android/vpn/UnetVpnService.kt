@@ -269,6 +269,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
                         idString = pubkey,
                         nodeFile = File(filesDir, "dht-nodes.bin").absolutePath,
                         authKeys = cfg.authKeys(),
+                        bootstrap = cfg.dhtBootstrap,
                         debug = cfg.debug,
                     ),
                 )

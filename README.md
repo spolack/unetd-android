@@ -213,7 +213,7 @@ tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
 | Workflow | What it does |
 |---|---|
 | `.github/workflows/android.yml` | Applies the patch series, builds the debug APK — native libraries included — and uploads it as an artifact, listing the `.so` files it contains; a second job runs lint and unit tests. |
-| `.github/workflows/android.yml`, job `emulator` | Runs the app on a stock Android emulator (API 37, x86_64, KVM) against a unetd router started on the runner (`tests/emulator/router.sh`): internet before the VPN, internet with the VPN up but nothing routed yet, the WireGuard handshake and HTTP through the tunnel, and internet after disconnecting. |
+| `.github/workflows/android.yml`, job `emulator` | Runs the app on a stock Android emulator (API 37, x86_64, KVM) against a unetd router started on the runner (`tests/emulator/router.sh`): internet before the VPN, internet with the VPN up but nothing routed yet, the WireGuard handshake and HTTP through the tunnel, and internet after disconnecting. Runs twice: once with the router's address configured as gateway, once with no gateway at all, where the app's own DHT node has to find the router in a private DHT on the runner. |
 | `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped) and M1a. |
 
 Upstream is vendored as a submodule and the Android changes are kept as an
@@ -304,6 +304,17 @@ app's. Four ordered tests:
 The VPN consent dialog cannot be clicked on a headless emulator; CI grants the
 same app-op the dialog sets: `adb shell appops set org.unetd.android ACTIVATE_VPN allow`.
 
+CI runs the four tests twice (`tests/emulator/run-tests.sh`, then again with
+`USE_DHT=1`). In the second pass the saved config has **no gateway**; the app
+starts unet-dht in its `:dht` process, bootstrapped from ten private DHT nodes
+on the runner (`tests/dht/dhtnode.c`, listening on `10.0.2.2`, the emulator's
+name for its host), where the router announces the network with its own
+unet-dht. `t3` then proves the whole discovery chain inside the app: DHT lookup,
+PEX to the announced address, signed data, WireGuard. The DHT pass waits up to
+four minutes for the peer, since bootstrapping alone takes about a minute.
+The `-b` bootstrap option (patch 0011) and the "DHT bootstrap nodes" field under
+*Advanced* in the setup screen exist for this; empty means the public routers.
+
 ## Environment note
 
 This was developed in a container whose kernel is booted with `ipv6.disable=1`,
@@ -344,8 +355,12 @@ mapping then loses its source port; with both sides doing that at once,
 nothing ever connects. Routers with a normal WAN firewall do not have this
 problem.
 
-Not verified anywhere yet: the DHT node in the app's own `:dht` process on a
-device, STUN, the public BitTorrent DHT (the testbed uses a private one), Doze
+The DHT node in the app's own `:dht` process is verified on the emulator too:
+the second emulator pass configures no gateway, and the app finds the router
+through a private DHT on the runner (see "The emulator test").
+
+Not verified anywhere yet: STUN, the public BitTorrent DHT (both the testbed
+and the emulator use a private one), Doze
 and roaming on a phone, and GrapheneOS specifics. The app has run on one physical
 device so far, where the VPN came up but the device's own VPN settings
 (always-on) were still being investigated.

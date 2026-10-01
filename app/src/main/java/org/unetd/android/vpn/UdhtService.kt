@@ -42,13 +42,14 @@ class UdhtService : Service() {
         val idString = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
         val nodeFile = intent.getStringExtra(EXTRA_NODE_FILE)
         val keys = intent.getStringArrayExtra(EXTRA_AUTH_KEYS) ?: emptyArray()
+        val bootstrap = intent.getStringArrayExtra(EXTRA_BOOTSTRAP) ?: emptyArray()
         val debug = intent.getBooleanExtra(EXTRA_DEBUG, false)
 
         stopping = false
         worker = Thread({
             Unetd.startLogCapture() // same library, this process: lines go to logcat as "unetd"
             while (!stopping) {
-                val rc = Udht.run(unixSocket, idString, nodeFile, keys, debug)
+                val rc = Udht.run(unixSocket, idString, nodeFile, keys, bootstrap, debug)
                 Log.i(TAG, "unet-dht returned $rc")
                 if (stopping) break
                 // unetd not up yet, or it went away: try again shortly.
@@ -76,6 +77,7 @@ class UdhtService : Service() {
         private const val EXTRA_ID = "id"
         private const val EXTRA_NODE_FILE = "node_file"
         private const val EXTRA_AUTH_KEYS = "auth_keys"
+        private const val EXTRA_BOOTSTRAP = "bootstrap"
         private const val EXTRA_DEBUG = "debug"
 
         fun startIntent(
@@ -84,12 +86,14 @@ class UdhtService : Service() {
             idString: String,
             nodeFile: String?,
             authKeys: List<String>,
+            bootstrap: List<String>,
             debug: Boolean,
         ): Intent = Intent(context, UdhtService::class.java)
             .putExtra(EXTRA_UNIX_SOCKET, unixSocket)
             .putExtra(EXTRA_ID, idString)
             .putExtra(EXTRA_NODE_FILE, nodeFile)
             .putExtra(EXTRA_AUTH_KEYS, authKeys.toTypedArray())
+            .putExtra(EXTRA_BOOTSTRAP, bootstrap.toTypedArray())
             .putExtra(EXTRA_DEBUG, debug)
 
         fun stopIntent(context: Context): Intent =

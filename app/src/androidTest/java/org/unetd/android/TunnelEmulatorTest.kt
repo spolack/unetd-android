@@ -39,6 +39,9 @@ import java.net.URL
  *   phoneKey       this device's private key, whose public key is in the signed data
  *   routerAddress  the router's in-tunnel IPv4 address, serving HTTP on :8080
  *   probeUrl       an internet URL that answers 204 (default: Google's connectivity check)
+ *   useDht         "true": configure no gateway at all; the app must find the
+ *                  router through the DHT (its own unet-dht in the :dht process)
+ *   dhtBootstrap   comma-separated host:port list of DHT nodes for that mode
  *
  * The VPN consent dialog cannot be clicked here; CI pre-grants it with
  * `adb shell appops set org.unetd.android ACTIVATE_VPN allow`, which is the
@@ -53,6 +56,8 @@ class TunnelEmulatorTest {
     private val gatewayHost get() = args.getString("gatewayHost") ?: "10.0.2.2"
     private val probeUrl get() = args.getString("probeUrl") ?: "https://connectivitycheck.gstatic.com/generate_204"
     private val routerAddress get() = args.getString("routerAddress")
+    private val useDht get() = args.getString("useDht") == "true"
+    private val dhtBootstrap get() = args.getString("dhtBootstrap")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
 
     @Test
     fun t1_baselineInternet() {
@@ -72,12 +77,15 @@ class TunnelEmulatorTest {
                 name = NETWORK,
                 privateKey = phoneKey,
                 authKey = authKey,
-                gateways = listOf(gatewayHost),
+                // DHT mode: nobody tells the app where the router is.
+                gateways = if (useDht) emptyList() else listOf(gatewayHost),
                 keepalive = 10,
-                dht = false,
+                dht = useDht,
+                dhtBootstrap = if (useDht) dhtBootstrap else emptyList(),
                 debug = true,
             ),
         )
+        println("mode: ${if (useDht) "DHT, bootstrap $dhtBootstrap" else "gateway $gatewayHost"}")
 
         assertNull("VPN consent must be pre-granted (adb shell appops set <pkg> ACTIVATE_VPN allow)", VpnService.prepare(context))
 
@@ -105,7 +113,8 @@ class TunnelEmulatorTest {
         assumeTrue("routerAddress instrumentation argument required", !router.isNullOrBlank())
         assumeTrue("t2 did not bring the VPN up", vpnNetwork() != null)
 
-        waitFor("unetd to fetch the network data and connect to the router", 120_000) {
+        // The DHT bootstrap alone takes about a minute before the first search.
+        waitFor("unetd to fetch the network data and connect to the router", if (useDht) 240_000 else 120_000) {
             val s = TunnelRuntime.status.value
             s.state == TunnelState.Connected && s.peers.any { it.connected }
         }

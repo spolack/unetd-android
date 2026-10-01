@@ -66,6 +66,7 @@ fun SetupScreen(
     var dht by rememberSaveable { mutableStateOf(initial.dht) }
     var debug by rememberSaveable { mutableStateOf(initial.debug) }
     var rawJson by rememberSaveable { mutableStateOf(initial.rawJson) }
+    var dhtBootstrap by rememberSaveable { mutableStateOf(initial.dhtBootstrap.joinToString("\n")) }
     var showAdvanced by rememberSaveable { mutableStateOf(initial.rawJson.isNotBlank()) }
 
     val publicKey = remember(privateKey) { if (privateKey.isBlank()) null else derivePublicKey(privateKey.trim()) }
@@ -78,6 +79,7 @@ fun SetupScreen(
         gateways = gateways.lines().map { it.trim() }.filter { it.isNotEmpty() },
         keepalive = keepalive.trim().toIntOrNull() ?: 10,
         dht = dht,
+        dhtBootstrap = if (showAdvanced) dhtBootstrap.lines().map { it.trim() }.filter { it.isNotEmpty() } else emptyList(),
         debug = debug,
         rawJson = if (showAdvanced) rawJson.trim() else "",
     )
@@ -190,6 +192,14 @@ fun SetupScreen(
                 Text(if (showAdvanced) "Hide advanced" else "Advanced: raw unetd network JSON")
             }
             if (showAdvanced) {
+                OutlinedTextField(
+                    value = dhtBootstrap,
+                    onValueChange = { dhtBootstrap = it },
+                    label = { Text("DHT bootstrap nodes (one per line)") },
+                    supportingText = { Text("host or host:port. Empty: the public BitTorrent routers. For a private DHT or a test setup.") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 OutlinedTextField(
                     value = rawJson,
                     onValueChange = { rawJson = it },

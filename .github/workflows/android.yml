@@ -199,6 +199,9 @@ jobs:
           sudo apt-get install -y -qq cmake ninja-build libjson-c-dev
           ./scripts/build-host.sh
 
+      - name: Build the private DHT node
+        run: cc -O2 -I third_party/unetd -o build/host/dhtnode tests/dht/dhtnode.c third_party/unetd/dht.c
+
       - name: Start the router
         id: router
         run: sudo -E env GITHUB_OUTPUT="$GITHUB_OUTPUT" ./tests/emulator/router.sh "$PWD/build/host" /tmp/unetd-router
@@ -216,12 +219,16 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          # Each line of `script` is its own shell command, hence one script.
-          script: ./tests/emulator/run-tests.sh
+          # Each line of `script` is its own shell command, hence one script,
+          # run twice: with the gateway configured, then with DHT discovery only.
+          script: |
+            ./tests/emulator/run-tests.sh
+            USE_DHT=1 ./tests/emulator/run-tests.sh
         env:
           AUTH_KEY: ${{ steps.router.outputs.authKey }}
           PHONE_KEY: ${{ steps.router.outputs.phoneKey }}
           ROUTER_ADDRESS: ${{ steps.router.outputs.routerAddress }}
+          DHT_BOOTSTRAP: ${{ steps.router.outputs.dhtBootstrap }}
 
       - name: Collect router logs
         if: always()
@@ -231,12 +238,12 @@ jobs:
           sudo cp /tmp/unetd-router/*.log emulator-logs/ 2>/dev/null || true
           sudo tcpdump -n -r /tmp/unetd-router/capture.pcap > emulator-logs/capture.txt 2>/dev/null || true
           sudo ss -lunp | grep -E "51819|51830|51999" > emulator-logs/listeners.txt || true
-          cp instrument.txt logcat.txt emulator-logs/ 2>/dev/null || true
+          cp instrument-*.txt logcat-*.txt emulator-logs/ 2>/dev/null || true
           sudo chown -R "$USER" emulator-logs
           echo "### Emulator test" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -E "^INSTRUMENTATION_STATUS: (test|stack)=|^INSTRUMENTATION_RESULT|^OK|^FAILURES|^Time:" instrument.txt 2>/dev/null | sort -u | head -40 >> "$GITHUB_STEP_SUMMARY" || true
-          grep -E "netdiag|tun:|http |dns |unetd-android" logcat.txt 2>/dev/null | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
+          for f in instrument-*.txt; do echo "## $f"; grep -E "^INSTRUMENTATION_STATUS: (test|stack)=|^OK|^FAILURES|^Time:|^Tests run" "$f" | sort -u | head -20; done >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          grep -hE "netdiag|tun:|unetd-android|received updated|Node: |DHT is ready" logcat-*.txt 2>/dev/null | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload emulator logs

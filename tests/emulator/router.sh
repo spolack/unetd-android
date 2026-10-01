@@ -41,6 +41,28 @@ AUTH_KEY="$("$UNET_TOOL" -P -K net.key)"
 ROUTER_PUB="$("$UNET_TOOL" -H -K router.key)"
 PHONE_PUB="$("$UNET_TOOL" -H -K phone.key)"
 
+# ---- a private DHT the emulator can reach ------------------------------------
+# The emulator addresses this machine as 10.0.2.2, and the DHT stores the
+# source address an announcing node is seen with. So put 10.0.2.2 on lo, bind
+# the DHT nodes to every address (the emulator's packets arrive from the
+# loopback side), and let the router talk to the DHT via 10.0.2.2, which makes
+# its announcement read 10.0.2.2:51819 -- exactly what the emulator must dial.
+DHTNODE="$HOST/dhtnode"
+DHT_BOOTSTRAP_LIST=""
+if [ -x "$DHTNODE" ]; then
+	ip addr add "$ROUTER_ENDPOINT/32" dev lo 2>/dev/null || true
+	BOOT=""
+	i=0
+	while [ $i -lt 10 ]; do
+		p=$((6881 + i))
+		"$DHTNODE" 0.0.0.0 $p $BOOT > "dht-node-$p.log" 2>&1 &
+		echo $! >> dht.pids
+		BOOT="$BOOT $ROUTER_ENDPOINT:$p"
+		DHT_BOOTSTRAP_LIST="$DHT_BOOTSTRAP_LIST${DHT_BOOTSTRAP_LIST:+,}$ROUTER_ENDPOINT:$p"
+		i=$((i + 1))
+	done
+fi
+
 # ---- the network ----------------------------------------------------------
 # Layer 3 only: no services, no tunnels. No peer-exchange-port and no STUN,
 # matching what the app ships as a conservative v1.
@@ -77,7 +99,7 @@ while [ ! -S "$SOCKDIR/$NET.sock" ]; do
 	sleep 0.1
 done
 
-"$UNETD" -d -S "$SOCKDIR" -D "$STATE/data" \
+"$UNETD" -d -S "$SOCKDIR" -D "$STATE/data" -u "$STATE/unetd.sock" \
 	-N "{\"name\":\"$NET\",\"type\":\"dynamic\",\"auth_key\":\"$AUTH_KEY\",\"key\":\"$(cat router.key)\",\"keepalive\":10}" \
 	> unetd.log 2>&1 &
 echo $! > unetd.pid
@@ -112,6 +134,15 @@ mkdir -p www && echo "hello from the router over unetd" > www/index.html
 python3 -m http.server 8080 --bind "$ROUTER_IP" --directory www > http.log 2>&1 &
 echo $! > http.pid
 
+# The router announces the network in the private DHT (what `dht=1` does on
+# an OpenWrt router), so the emulator can find it with no gateway configured.
+if [ -x "$DHTNODE" ]; then
+	UDHT="$HOST/unetd/unet-dht"
+	"$UDHT" -d -b "$ROUTER_ENDPOINT:6881" -b "$ROUTER_ENDPOINT:6882" -b "$ROUTER_ENDPOINT:6883" \
+		-u "$STATE/unetd.sock" -N "$AUTH_KEY" router-node > udht.log 2>&1 &
+	echo $! > udht.pid
+fi
+
 echo "router up: unetd pid $(cat unetd.pid), wireguard-go pid $(cat wireguard-go.pid), http on $ROUTER_IP:8080"
 grep -q "listen_port\|Updating private key" wireguard-go.log 2>/dev/null && echo "router WireGuard configured by unetd" || true
 
@@ -125,3 +156,4 @@ out authKey "$AUTH_KEY"
 out phoneKey "$(cat phone.key)"
 out routerAddress "$ROUTER_IP"
 out phoneAddress "$PHONE_IP"
+out dhtBootstrap "$DHT_BOOTSTRAP_LIST"

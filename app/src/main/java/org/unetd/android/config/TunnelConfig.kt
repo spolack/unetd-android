@@ -28,6 +28,8 @@ data class TunnelConfig(
      */
     val keepalive: Int = 10,
     val dht: Boolean = true,
+    /** DHT bootstrap nodes, `host[:port]`; empty means the public BitTorrent routers. */
+    val dhtBootstrap: List<String> = emptyList(),
     val debug: Boolean = true,
     /** Advanced: a complete unetd network JSON used verbatim instead of the fields above. */
     val rawJson: String = "",
@@ -66,6 +68,7 @@ data class TunnelConfig(
         put("gateways", JSONArray(gateways))
         put("keepalive", keepalive)
         put("dht", dht)
+        put("dhtBootstrap", JSONArray(dhtBootstrap))
         put("debug", debug)
         put("rawJson", rawJson)
     }.toString()
@@ -74,6 +77,7 @@ data class TunnelConfig(
         fun fromJson(json: String): TunnelConfig? = runCatching {
             val o = JSONObject(json)
             val gw = o.optJSONArray("gateways")
+            val bs = o.optJSONArray("dhtBootstrap")
             TunnelConfig(
                 name = o.optString("name", "unet"),
                 privateKey = o.optString("privateKey", ""),
@@ -81,6 +85,7 @@ data class TunnelConfig(
                 gateways = if (gw == null) emptyList() else List(gw.length()) { gw.getString(it) },
                 keepalive = o.optInt("keepalive", 10),
                 dht = o.optBoolean("dht", true),
+                dhtBootstrap = if (bs == null) emptyList() else List(bs.length()) { bs.getString(it) },
                 debug = o.optBoolean("debug", true),
                 rawJson = o.optString("rawJson", ""),
             )
