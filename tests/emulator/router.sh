@@ -14,6 +14,7 @@
 #   authKey, phoneKey, routerAddress, phoneAddress
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST="${1:?usage: $0 <build/host dir> [<state dir>]}"
 STATE="${2:-/tmp/unetd-router}"
 NET=wgci
@@ -43,24 +44,36 @@ PHONE_PUB="$("$UNET_TOOL" -H -K phone.key)"
 
 # ---- a private DHT the emulator can reach ------------------------------------
 # The emulator addresses this machine as 10.0.2.2, and the DHT stores the
-# source address an announcing node is seen with. So put 10.0.2.2 on lo, bind
-# the DHT nodes to every address (the emulator's packets arrive from the
-# loopback side), and let the router talk to the DHT via 10.0.2.2, which makes
-# its announcement read 10.0.2.2:51819 -- exactly what the emulator must dial.
+# source address an announcing node is seen with. So put 10.0.2.2 on lo and let
+# the router talk to the DHT via 10.0.2.2, which makes its announcement read
+# 10.0.2.2:51819 -- exactly what the emulator must dial.
+#
+# The emulator's own packets, however, arrive from 127.0.0.1 (QEMU's user-mode
+# NAT sends them from the host's loopback address), and a DHT node drops
+# anything from 127.0.0.0/8 as a martian source (dht.c is_martian), silently.
+# So the DHT nodes listen on 10.0.2.2 only, and a small UDP proxy on 127.0.0.1
+# forwards the emulator's packets to them from a second lo alias: in the DHT
+# the emulator is a routable peer. PEX and WireGuard need none of this.
 DHTNODE="$HOST/dhtnode"
 DHT_BOOTSTRAP_LIST=""
+EMULATOR_ALIAS="${EMULATOR_ALIAS:-10.0.2.100}"
 if [ -x "$DHTNODE" ]; then
 	ip addr add "$ROUTER_ENDPOINT/32" dev lo 2>/dev/null || true
+	ip addr add "$EMULATOR_ALIAS/32" dev lo 2>/dev/null || true
 	BOOT=""
+	PORTS=""
 	i=0
 	while [ $i -lt 10 ]; do
 		p=$((6881 + i))
-		"$DHTNODE" 0.0.0.0 $p $BOOT > "dht-node-$p.log" 2>&1 &
+		"$DHTNODE" "$ROUTER_ENDPOINT" $p $BOOT > "dht-node-$p.log" 2>&1 &
 		echo $! >> dht.pids
 		BOOT="$BOOT $ROUTER_ENDPOINT:$p"
+		PORTS="$PORTS $p"
 		DHT_BOOTSTRAP_LIST="$DHT_BOOTSTRAP_LIST${DHT_BOOTSTRAP_LIST:+,}$ROUTER_ENDPOINT:$p"
 		i=$((i + 1))
 	done
+	python3 "$SCRIPT_DIR/udp-proxy.py" 127.0.0.1 "$EMULATOR_ALIAS" "$ROUTER_ENDPOINT" $PORTS > udp-proxy.log 2>&1 &
+	echo $! > udp-proxy.pid
 fi
 
 # ---- the network ----------------------------------------------------------

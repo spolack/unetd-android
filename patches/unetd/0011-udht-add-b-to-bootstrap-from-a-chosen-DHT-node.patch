@@ -6,15 +6,17 @@ Subject: [PATCH] udht: add -b to bootstrap from a chosen DHT node
 The only bootstrap nodes were the two hard-coded public routers, which makes
 unet-dht untestable without internet access and unusable in a private DHT.
 -b <host>[:<port>], repeatable, replaces that list; the default is unchanged.
+The list is cleared at the start of udht_main() so a repeated call from an
+embedder does not accumulate the same nodes.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
 ---
- udht.c | 52 +++++++++++++++++++++++++++++++++++++++++-----------
- 1 file changed, 41 insertions(+), 11 deletions(-)
+ udht.c | 53 ++++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 42 insertions(+), 11 deletions(-)
 
 diff --git a/udht.c b/udht.c
-index 9162364..16b4e8e 100644
+index 32313f6..a275c2b 100644
 --- a/udht.c
 +++ b/udht.c
 @@ -363,7 +363,11 @@ static void udht_add_peer(const void *data, int len)
@@ -90,11 +92,12 @@ index 9162364..16b4e8e 100644
  		"	-d			Enable debug mode\n"
  		"	-n <file>		Set node filename\n"
  		"	-N <key>		Add network key\n"
-@@ -660,8 +686,12 @@ int udht_main(int argc, char **argv)
- 	uint8_t auth_key[CURVE25519_KEY_SIZE];
- 	int ch;
+@@ -662,8 +688,13 @@ int udht_main(int argc, char **argv)
  
+ 	/* An embedder may call this again after it returned: start getopt over. */
+ 	optind = 1;
 -	while ((ch = getopt(argc, argv, "dN:n:u:")) != -1) {
++	n_bootstrap_args = 0;
 +	while ((ch = getopt(argc, argv, "b:dN:n:u:")) != -1) {
  		switch (ch) {
 +		case 'b':

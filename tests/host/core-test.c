@@ -11,6 +11,7 @@
  * file-scope state have to survive a full cycle.
  *
  * Usage: core-test <data-dir> <socket-dir> <network-json>
+ * Environment: CORE_TEST_UNIX_SOCKET (control socket path), CORE_TEST_HOLD (seconds)
  * A wireguard-go instance must already be serving <socket-dir>/<name>.sock.
  */
 #include <pthread.h>
@@ -132,6 +133,14 @@ static void one_cycle(const struct unetd_core_config *cfg,
 		fail("status unavailable");
 	free(key);
 
+	/* CORE_TEST_HOLD=<seconds>: stay up in round 1 so another process (unet-dht)
+	 * can connect to the control socket and use the relay. */
+	if (round == 1 && getenv("CORE_TEST_HOLD")) {
+		printf("round %d: holding for %s s\n", round, getenv("CORE_TEST_HOLD"));
+		fflush(stdout);
+		sleep(atoi(getenv("CORE_TEST_HOLD")));
+	}
+
 	if (unetd_core_network_remove("no-such-network") == 0)
 		fail("removing an unknown network succeeded");
 	if (unetd_core_network_remove(getenv("NET_NAME") ? getenv("NET_NAME") : "wgm1"))
@@ -167,7 +176,8 @@ int main(int argc, char **argv)
 	cfg = (struct unetd_core_config){
 		.data_dir = argv[1],
 		.socket_dir = argv[2],
-		.unix_socket = NULL,
+		/* CORE_TEST_UNIX_SOCKET: also serve unetd's control socket (unet-dht relay) */
+		.unix_socket = getenv("CORE_TEST_UNIX_SOCKET"),
 		.pex_port = 0,
 		.debug = true,
 	};

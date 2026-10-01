@@ -64,15 +64,25 @@ jobs:
           sudo ./tests/host/m1-core.sh \
             build/native-host/core-test third_party/unetd build/host/wireguard-go
 
+      - name: Build the private DHT node
+        run: cc -O2 -I third_party/unetd -o build/host/dhtnode tests/dht/dhtnode.c third_party/unetd/dht.c
+
+      # The app's unet-dht does not own a UDP socket: it hands its packets to
+      # unetd over the control socket, which sends them from the global PEX
+      # socket and feeds replies back. That relay inside the library wrapper
+      # (not the unetd binary) is what this checks: a ping to a DHT node gets
+      # its pong.
+      - name: M1b - the library wrapper relays unet-dht through its control socket
+        run: |
+          sudo ./tests/host/m1b-dht-relay.sh \
+            build/native-host/core-test third_party/unetd build/host
+
       # M1: DHT rendezvous with both ends behind NAT. Two unetd nodes in network
       # namespaces, each behind its own MASQUERADE router, a private DHT of ten
       # nodes on the "internet" between them; the phone side knows only its key
       # and the network's public key and has to find the gateway through the
       # DHT, fetch the signed data over PEX and bring WireGuard up through both
       # NATs.
-      - name: Build the private DHT node
-        run: cc -O2 -I third_party/unetd -o build/host/dhtnode tests/dht/dhtnode.c third_party/unetd/dht.c
-
       - name: M1 - DHT discovery through two NATs
         run: |
           sudo apt-get install -y -qq iptables conntrack >/dev/null

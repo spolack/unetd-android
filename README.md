@@ -214,7 +214,7 @@ tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
 |---|---|
 | `.github/workflows/android.yml` | Applies the patch series, builds the debug APK — native libraries included — and uploads it as an artifact, listing the `.so` files it contains; a second job runs lint and unit tests. |
 | `.github/workflows/android.yml`, job `emulator` | Runs the app on a stock Android emulator (API 37, x86_64, KVM) against a unetd router started on the runner (`tests/emulator/router.sh`): internet before the VPN, internet with the VPN up but nothing routed yet, the WireGuard handshake and HTTP through the tunnel, and internet after disconnecting. Runs twice: once with the router's address configured as gateway, once with no gateway at all, where the app's own DHT node has to find the router in a private DHT on the runner. |
-| `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped) and M1a. |
+| `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped), M1a, M1b and the M1 NAT testbed. |
 
 Upstream is vendored as a submodule and the Android changes are kept as an
 ordered patch series rather than a fork, so each one stays submittable to
@@ -231,7 +231,7 @@ upstream on its own.
 | `0005` wg-user: runtime UAPI socket directory | The path is only known at runtime on Android, and `/data/data/<pkg>` is wrong for secondary users and work profiles. Also fixes an unchecked `snprintf()` truncation against the 108-byte `sun_path` limit. |
 | `0006` platform: hooks for socket protection and interface updates | `protect_socket()` for the sockets that must bypass the tunnel the process itself provides; `network_update()` as an in-process replacement for `update-cmd`, since fork+exec is unavailable to an app on Android 10+. Both optional; nothing changes when unset. |
 | `0007` network: expose the status dump without ubus | `__network_dump()` was static in `ubus.c`, so a build without ubus had no way to report peers, endpoints or counters at all. |
-| `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`, so an app can run the DHT node from its own entry point. |
+| `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`, so an app can run the DHT node from its own entry point. getopt's `optind` is reset on entry, since the app calls it again whenever unetd went away and came back; without that the second call only printed the usage. |
 | `0009` pex: report dropped global messages and failed sends | A host that never gets its network data could not be debugged: unknown-network drops and `sendto()` errors were silent. The emulator run was diagnosed with exactly these lines. |
 | `0010` pex: IPv4 fallback for the global PEX socket | The socket is `AF_INET6` dual-stack and cannot be created on a kernel with `ipv6.disable=1`; unetd then ran with no peer exchange at all. Open an IPv4 socket on the same port instead. |
 | `0011` udht: `-b` bootstrap option | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. |
@@ -287,6 +287,7 @@ real WireGuard port with no spoofing and no capability at all.
 | M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
 | M1 `tests/dht/nat-testbed.sh` | **DHT discovery with both ends behind NAT**, the topology this app is for. Five network namespaces: a gateway and a phone, each behind its own port-preserving MASQUERADE router with unsolicited WAN input dropped, and an "internet" between them running a private DHT of ten nodes (`tests/dht/dhtnode.c`, on unetd's own `dht.c`). The phone knows only its key and the network's public key. It must find the gateway's external address through the DHT, fetch the signed data over the global PEX socket through both NATs, learn the WireGuard endpoint from PEX, and get a UDP echo back through the tunnel. Passes in about two minutes; the DHT bootstrap is most of it. |
 | M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
+| M1b `tests/host/m1b-dht-relay.sh` | The same wrapper **relays unet-dht**. unet-dht owns no UDP socket: it hands every DHT packet to unetd over the control socket, unetd sends it from the global PEX socket and feeds the reply back through a passed socketpair. The app runs exactly this across its two processes. A ping from unet-dht to a private DHT node on a loopback alias must come back as a pong through the wrapper, and core-test must still finish both of its rounds with the control socket open. |
 
 ## The emulator test
 
@@ -314,6 +315,15 @@ PEX to the announced address, signed data, WireGuard. The DHT pass waits up to
 four minutes for the peer, since bootstrapping alone takes about a minute.
 The `-b` bootstrap option (patch 0011) and the "DHT bootstrap nodes" field under
 *Advanced* in the setup screen exist for this; empty means the public routers.
+
+One emulator detail cost a run: QEMU's user-mode NAT delivers the guest's
+packets to the host from **127.0.0.1**, and a DHT node drops anything from
+127.0.0.0/8 as a martian source (`is_martian()` in dht.c), silently. The DHT
+nodes therefore listen on `10.0.2.2` only, and `tests/emulator/udp-proxy.py`
+on 127.0.0.1 forwards the emulator's packets to them from a second lo alias
+(`10.0.2.100`), so the DHT sees a routable peer. (SNAT on loopback does not
+work: the packet passes conntrack twice and the reply is never mapped back.)
+PEX and WireGuard are left alone, they work from 127.0.0.1.
 
 ## Environment note
 
