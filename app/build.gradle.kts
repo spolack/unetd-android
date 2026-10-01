@@ -1,6 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // No kotlin-android plugin: AGP 9 compiles Kotlin itself, and applying it is an error.
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -11,13 +11,14 @@ val unetdPackageName: String = providers.gradleProperty("unetd.packageName").get
 
 android {
     namespace = unetdPackageName
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = unetdPackageName
         // 26 gives us VpnService.Builder.setMetered() and foreground service types.
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0-dev"
     }
@@ -37,10 +38,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildFeatures {
@@ -63,7 +60,6 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material.icons)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

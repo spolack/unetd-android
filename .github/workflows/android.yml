@@ -17,18 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      # Latest GA JDK, per the repo policy. Gradle 9.8 is the first release that
+      # runs on Java 27; the app still compiles to Java 17 bytecode.
+      - name: Set up JDK 27
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "27"
 
-      # The runner image ships an Android SDK, but pin the pieces we compile
-      # against so a runner image bump cannot silently change them.
+      # Accepts the SDK licences. The platform and build-tools come from
+      # compileSdk/buildToolsVersion in app/build.gradle.kts, which AGP installs
+      # on demand, so that file stays the single source of truth for both.
       - name: Set up the Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: "platforms;android-35 build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
@@ -57,16 +58,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      # Latest GA JDK, per the repo policy. Gradle 9.8 is the first release that
+      # runs on Java 27; the app still compiles to Java 17 bytecode.
+      - name: Set up JDK 27
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "27"
 
       - name: Set up the Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: "platforms;android-35 build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
