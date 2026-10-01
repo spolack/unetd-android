@@ -316,16 +316,22 @@ See `NOTICE`.
 
 ## A note on what is verified
 
-The native side — patch series, host build, M0, M1a — is verified locally and in
+The native side (patch series, host build, M0, M1a) is verified locally and in
 CI, and is reproducible from a clean checkout. M0 also passes in CI with
 `CAP_NET_RAW` dropped, which is the case that matters for Android.
 
-The Android app builds (Kotlin, and the native libraries for three ABIs), lints
-and passes unit tests in CI. It has **not** been run on a device or emulator. In
-particular, none of the following has been seen working: `VpnService.protect()`
-from the Go control function, wireguard-go reading a `VpnService` tun, unetd
-fetching network data over the global PEX socket from a phone, the DHT node in
-its own process, or the re-establish dance when the first interface update
-arrives. Each is built on code paths that work elsewhere (wireguard-android,
-upstream unetd on routers), but the combination is new and the first device run
-will tell. The **Log** screen exists for exactly that moment.
+The whole tunnel is verified on a **stock Android 17 (API 37) emulator in CI**,
+against a unetd router on the same machine (`emulator` job): internet keeps
+working with the VPN up and nothing routed, unetd fetches the signed network
+data over the global PEX socket, the tunnel re-establishes with the derived
+addresses, WireGuard handshakes, HTTP goes through the tunnel to the router,
+and disconnecting takes the VPN down again. Two things that run came out of
+exactly this test: `allowFamily` (Android blocks an unrouted address family
+otherwise) and `ACCESS_LOCAL_NETWORK` (Android 17 refuses packets to LAN
+addresses without it, which is where a gateway usually lives).
+
+Not verified anywhere yet: the DHT node in its own process, STUN, peer
+exchange through a NAT with a *real* router on the other side, Doze and
+roaming on a phone, and GrapheneOS specifics. The app has run on one physical
+device so far, where the VPN came up but the device's own VPN settings
+(always-on) were still being investigated.

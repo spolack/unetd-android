@@ -45,19 +45,29 @@ object NetDiag {
             out.append("  dns $host FAILED: $e\n")
         }
 
-        for (url in listOf("https://$host/generate_204", "http://34.107.221.82/generate_204")) {
-            val t1 = System.currentTimeMillis()
-            try {
-                val c = URL(url).openConnection() as HttpURLConnection
-                c.connectTimeout = 5000
-                c.readTimeout = 5000
-                c.instanceFollowRedirects = false
-                val code = c.responseCode
-                c.disconnect()
-                out.append("  http $url -> $code in ${System.currentTimeMillis() - t1} ms\n")
-            } catch (e: Exception) {
-                out.append("  http $url FAILED after ${System.currentTimeMillis() - t1} ms: $e\n")
+        val url = "https://$host/generate_204"
+        val t1 = System.currentTimeMillis()
+        try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.connectTimeout = 5000
+            c.readTimeout = 5000
+            c.instanceFollowRedirects = false
+            val code = c.responseCode
+            c.disconnect()
+            out.append("  https $host -> $code in ${System.currentTimeMillis() - t1} ms\n")
+        } catch (e: Exception) {
+            out.append("  https $host FAILED after ${System.currentTimeMillis() - t1} ms: $e\n")
+        }
+        // TCP by address, no DNS and no TLS involved (a raw socket, so the
+        // platform's cleartext policy does not apply).
+        val t2 = System.currentTimeMillis()
+        try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("34.107.221.82", 80), 5000)
+                out.append("  tcp 34.107.221.82:80 connected in ${System.currentTimeMillis() - t2} ms\n")
             }
+        } catch (e: Exception) {
+            out.append("  tcp 34.107.221.82:80 FAILED after ${System.currentTimeMillis() - t2} ms: $e\n")
         }
         System.err.print(out)
     }
