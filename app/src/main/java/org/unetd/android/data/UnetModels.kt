@@ -47,6 +47,10 @@ data class Capabilities(
     val dht: Boolean,
     /** False on every unrooted device; the punch goes via the WireGuard socket instead. */
     val rawSockets: Boolean,
+    /** What STUN learned: the NAT's outside port for the WireGuard port, null until a server answered. */
+    val stunExternalPort: Int? = null,
+    /** Same for the peer-exchange port (the only one an app can probe, lacking raw sockets). */
+    val stunAuthExternalPort: Int? = null,
 )
 
 data class NetworkStatus(
@@ -63,6 +67,8 @@ data class NetworkStatus(
     val message: String? = null,
     /** This device's public key, so it can be added to the network with unet-cli. */
     val localPublicKey: String? = null,
+    /** How often a gateway refused our request for network data: our key is not in it. */
+    val updateRefused: Int = 0,
 ) {
     val directPeerCount: Int get() = peers.count { it.link != PeerLink.Indirect }
     val onlinePeerCount: Int get() = peers.count { it.connected }

@@ -235,6 +235,18 @@ private fun CapabilityCard(caps: Capabilities, dhtSummary: String?) {
                 Chip("STUN", caps.stun)
                 Chip("DHT", caps.dht)
             }
+            if (caps.stun) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "STUN: " + when {
+                        caps.stunExternalPort != null -> "WireGuard port seen from outside as ${caps.stunExternalPort}"
+                        caps.stunAuthExternalPort != null -> "peer-exchange port seen from outside as ${caps.stunAuthExternalPort}"
+                        else -> "servers configured, no answer yet"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (caps.dht) {
                 Spacer(Modifier.height(10.dp))
                 Text(

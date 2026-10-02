@@ -20,6 +20,7 @@ import org.junit.runners.MethodSorters
 import org.unetd.android.config.ConfigStore
 import org.unetd.android.config.TunnelConfig
 import org.unetd.android.data.TunnelState
+import org.unetd.android.nativebridge.Unetd
 import org.unetd.android.vpn.TunnelRuntime
 import org.unetd.android.vpn.UnetVpnService
 import java.net.HttpURLConnection
@@ -127,6 +128,28 @@ class TunnelEmulatorTest {
         assertTrue("HTTP through the tunnel to the router, got: $reply", reply.startsWith("HTTP/1.0 200") || reply.startsWith("HTTP/1.1 200"))
         assertTrue("the router's page came through the tunnel", reply.contains("hello from the router"))
         println("tunnel round trip: ${System.currentTimeMillis() - t0} ms")
+    }
+
+    /**
+     * The network data carries two public STUN servers. Once connected, unetd
+     * must query them and learn an outside port. On Android that is the
+     * peer-exchange port's mapping (no raw sockets), and unetd postpones the
+     * query for 60 s while a peer is already connected, hence the long wait.
+     */
+    @Test
+    fun t3b_stunLearnsExternalPort() {
+        assumeTrue("routerAddress instrumentation argument required", !routerAddress.isNullOrBlank())
+        val s = TunnelRuntime.status.value
+        assumeTrue("t3 did not connect", s.state == TunnelState.Connected)
+        assertTrue("the signed data should carry STUN servers", s.capabilities.stun)
+        waitFor("unetd to learn an external port via STUN", 100_000) {
+            Unetd.logTail(1000).contains("Update external")
+        }
+        val line = Unetd.logTail(1000).lines().last { it.contains("Update external") }
+        println("stun: $line")
+        waitFor("the status to carry the STUN result", 10_000) {
+            TunnelRuntime.status.value.capabilities.let { it.stunExternalPort != null || it.stunAuthExternalPort != null }
+        }
     }
 
     @Test

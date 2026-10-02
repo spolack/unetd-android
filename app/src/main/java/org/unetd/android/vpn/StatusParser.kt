@@ -27,6 +27,7 @@ object StatusParser {
 
         val localAddress = net.optString("local_address", "")
         val hasLocalHost = localAddress.isNotEmpty()
+        val updateRefused = net.optInt("update_refused", 0)
         val indirect = net.optJSONArray("indirect_peers")?.let { arr ->
             buildSet { for (i in 0 until arr.length()) add(arr.getString(i)) }
         } ?: emptySet()
@@ -68,15 +69,21 @@ object StatusParser {
                 stun = net.optBoolean("stun", false),
                 dht = dhtEnabled && pexSocket,
                 rawSockets = false,
+                stunExternalPort = net.optInt("stun_port_ext", 0).takeIf { it > 0 },
+                stunAuthExternalPort = net.optInt("stun_auth_port_ext", 0).takeIf { it > 0 },
             ),
             message = when {
                 !pexSocket -> "Global PEX socket could not be opened (port ${root.optInt("pex_port", 51819)}); network data cannot be fetched."
                 !hasLocalHost && net.optBoolean("no_local_host", false) ->
                     "This device's key is not part of the network data. Add its public key with unet-cli."
+                !hasLocalHost && updateRefused > 0 ->
+                    "A gateway answered but refused this device ($updateRefused×): its public key is not " +
+                        "in the signed network data. Add it with unet-cli add-host and re-sign."
                 !hasLocalHost -> "Waiting for the signed network data from a gateway…"
                 else -> null
             },
             localPublicKey = net.optString("local_pubkey", "").ifEmpty { null },
+            updateRefused = updateRefused,
         )
     }
 }

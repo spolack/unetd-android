@@ -14,8 +14,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
 ---
  pex-msg.c |  3 +++
- pex.c     | 10 ++++++++--
- 2 files changed, 11 insertions(+), 2 deletions(-)
+ pex.c     | 18 ++++++++++++++++--
+ 2 files changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
 index 79aceb1..7885952 100644
@@ -32,7 +32,7 @@ index 79aceb1..7885952 100644
  }
  
 diff --git a/pex.c b/pex.c
-index 9108bb7..f0ecc75 100644
+index 9108bb7..eb82668 100644
 --- a/pex.c
 +++ b/pex.c
 @@ -1056,6 +1056,7 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
@@ -43,13 +43,18 @@ index 9108bb7..f0ecc75 100644
  	hdr = pex_rx_accept(msg, msg_len, true);
  	if (!hdr)
  		return;
-@@ -1063,13 +1064,18 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
+@@ -1063,13 +1064,26 @@ global_pex_recv(void *msg, size_t msg_len, struct sockaddr_in6 *addr)
  	ehdr = (void *)(hdr + 1);
  	data = (void *)(ehdr + 1);
  
 -	if (hdr->version != 0)
 +	if (hdr->version != 0) {
-+		D("PEX global rx: dropped version %d message", hdr->version);
++		/* The DHT shares this port, and an announced port attracts
++		 * BitTorrent clients: log the first few only. */
++		static int bad_version;
++
++		if (bad_version < 5 && ++bad_version)
++			D("PEX global rx: dropped version %d message (first %d logged)", hdr->version, 5);
  		return;
 +	}
  
@@ -57,8 +62,11 @@ index 9108bb7..f0ecc75 100644
  		net = global_pex_find_network(ehdr->auth_id);
 -		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC)
 +		if (!net || net->config.type != NETWORK_TYPE_DYNAMIC) {
-+			D("PEX global rx: op=%d for %s network", hdr->opcode,
-+			  net ? "a non-dynamic" : "an unknown");
++			static int bad_net;
++
++			if (bad_net < 5 && ++bad_net)
++				D("PEX global rx: op=%d for %s network (first %d logged)", hdr->opcode,
++				  net ? "a non-dynamic" : "an unknown", 5);
  			return;
 +		}
  

@@ -301,6 +301,7 @@ app's. Four ordered tests:
 | `t1_baselineInternet` | DNS and HTTP work before any VPN. |
 | `t2_splitTunnelKeepsInternet` | With the VPN up on the placeholder tun (no routes yet), the internet still works. Android blocks a whole address family for a VPN that adds nothing of that family, which the service counters with `allowFamily`; this is the regression test. |
 | `t3_tunnelCarriesTraffic` | unetd fetched the signed data from the router on the runner, the tunnel re-established with the real addresses, WireGuard handshook, and HTTP to the router's in-tunnel address answers through it. |
+| `t3b_stunLearnsExternalPort` | The signed data carries two public STUN servers; unetd queries them and learns an outside port, which the status and the home screen show. On Android it is the peer-exchange port's mapping, since probing the WireGuard port needs a raw socket. |
 | `t4_disconnectRemovesVpn` | Disconnecting in the app takes the VPN down and leaves the internet working. |
 
 The VPN consent dialog cannot be clicked on a headless emulator; CI grants the
@@ -334,6 +335,33 @@ on 127.0.0.1 forwards the emulator's packets to them from a second lo alias
 (`10.0.2.100`), so the DHT sees a routable peer. (SNAT on loopback does not
 work: the packet passes conntrack twice and the reply is never mapped back.)
 PEX and WireGuard are left alone, they work from 127.0.0.1.
+
+## Behind carrier-grade NAT
+
+When the gateway sits behind a CGNAT (DS-Lite is the common case), nothing
+reaches it unsolicited, firewall rules or not. unetd's design still connects
+two such hosts: both announce themselves in the DHT with the port the DHT nodes
+saw, both search, and each sends to the other's outside address, which opens
+the mappings. That needs three things, and the app's Log screen tells you about
+two of them:
+
+- Both DHT nodes alive. The phone's shows up as `Node: <address>` in its DHT
+  log; the gateway's needs `unet-dht -d` on the router.
+- Endpoint-independent mappings on both NATs. The `nat (plain)` and
+  `nat (protected)` lines in the netdiag block classify the phone's NAT by
+  asking two STUN servers from one socket. For the CGNAT, configure two
+  `stun-servers` in the network and read unetd's `Update external data port`
+  lines on the router: equal ports from both servers is the good case.
+- Patience: discovery, announcement and the other side's search add up to a
+  minute or two.
+
+A symmetric NAT on either side defeats this, STUN included. The way out is an
+IPv6 endpoint for the gateway, which DS-Lite provides natively and which
+unetd's dual-stack peer-exchange socket uses as it is, or a relay host with a
+public address. The two upstream bootstrap routers also matter here: with both
+of them silent, a gateway's DHT dies after a reboot (its node cache lives in
+`/var/run`), so the stock OpenWrt `unet-dht` needs patch 0011 or a hosts entry
+pointing one of those names at a live router.
 
 ## Environment note
 

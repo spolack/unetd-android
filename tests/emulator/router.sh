@@ -83,7 +83,8 @@ cat > "$NET.json" <<JSON
 {
 	"config": {
 		"port": $PORT,
-		"keepalive": 10
+		"keepalive": 10,
+		"stun-servers": [ "stun.l.google.com:19302", "stun.cloudflare.com:3478" ]
 	},
 	"hosts": {
 		"router": {

@@ -172,6 +172,10 @@ static char *do_status(void)
 		blobmsg_add_u32(&b, "port", net->net_config.port);
 		blobmsg_add_u8(&b, "pex_open", net->pex.fd.fd >= 0);
 		blobmsg_add_u8(&b, "stun", !list_empty(&net->stun.servers));
+		/* what STUN learned: the NAT's outside port for the WireGuard port
+		 * ("data") and for the PEX port ("auth"); 0 until a server answered */
+		blobmsg_add_u32(&b, "stun_port_ext", net->stun.port_ext);
+		blobmsg_add_u32(&b, "stun_auth_port_ext", net->stun.auth_port_ext);
 		/* network_dump_status() does not say which peers are reached via a gateway */
 		p = blobmsg_open_array(&b, "indirect_peers");
 		vlist_for_each_element(&net->peers, peer, node)

@@ -1,8 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <spolack+claude@mailbox.org>
 Date: Thu, 1 Oct 2026 20:23:01 +0000
-Subject: [PATCH] pex: fall back to an IPv4 socket when the kernel has no
- IPv6
+Subject: [PATCH] pex: fall back to an IPv4 socket when the kernel has no IPv6
 
 The global PEX socket is AF_INET6 with IPV6_V6ONLY off, which serves both
 families on one socket but cannot be created at all on a kernel booted with

@@ -37,6 +37,24 @@ for h, port in routers:
     except OSError as e:
         print(f"  {h} ({ip}): {e}")
     s.close()
+
+# The STUN servers the README recommends for stun-servers: one binding request each.
+stun = [("stun.l.google.com", 19302), ("stun.cloudflare.com", 3478)]
+import struct
+for h, port in stun:
+    try:
+        ip = socket.gethostbyname(h)
+    except OSError as e:
+        print(f"  stun {h}: DNS failed: {e}"); continue
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+    tid = os.urandom(12)
+    try:
+        s.sendto(struct.pack("!HHI", 1, 0, 0x2112A442) + tid, (ip, port)); d, a = s.recvfrom(1500)
+        ok = len(d) >= 20 and d[0:2] == b"\x01\x01" and d[8:20] == tid
+        print(f"  stun {h}:{port} ({ip}): {'binding response' if ok else 'unexpected reply'} {len(d)} bytes")
+    except socket.timeout:
+        print(f"  stun {h}:{port} ({ip}): NO REPLY in 4 s")
+    s.close()
 PY
 
 "$HOST/unetd/unetd" -d -D "$RUNDIR/data" -u "$RUNDIR/unetd.sock" > "$RUNDIR/unetd.log" 2>&1 &

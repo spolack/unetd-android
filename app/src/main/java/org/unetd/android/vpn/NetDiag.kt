@@ -83,7 +83,78 @@ object NetDiag {
             udpProbe(out, "dht $router:$port", router, port, dhtPing(), null)
             if (protect != null) udpProbe(out, "dht $router:$port protected", router, port, dhtPing(), protect)
         }
+        // NAT behaviour: the same socket asks two STUN servers for its mapped
+        // address. Equal ports mean endpoint-independent mapping, which hole
+        // punching can get through; different ports mean a symmetric NAT,
+        // which it cannot. Once plain, once protect()ed like unetd's sockets.
+        natProbe(out, "plain", null)
+        if (protect != null) natProbe(out, "protected", protect)
         AppLog.line(out.toString().trimEnd())
+    }
+
+    private val stunServers = listOf("stun.l.google.com" to 19302, "stun.cloudflare.com" to 3478)
+
+    private fun natProbe(out: StringBuilder, label: String, protect: ((java.net.DatagramSocket) -> Boolean)?) {
+        try {
+            java.net.DatagramSocket().use { s ->
+                if (protect != null && !protect(s)) {
+                    out.append("  nat ($label): protect() REFUSED\n")
+                    return
+                }
+                s.soTimeout = 3000
+                val mapped = stunServers.map { (host, port) ->
+                    val m = runCatching { stunMappedAddress(s, host, port) }.getOrNull()
+                    out.append("  stun $host:$port ($label): ${m ?: "NO REPLY"}\n")
+                    m
+                }
+                val ok = mapped.filterNotNull()
+                val verdict = when {
+                    ok.size < 2 -> "undetermined (${ok.size} of ${mapped.size} servers answered)"
+                    ok.toSet().size == 1 -> {
+                        val port = ok[0].substringAfterLast(':').toIntOrNull()
+                        "endpoint-independent mapping, hole punching possible" +
+                            if (port == s.localPort) ", port preserved" else " (local port ${s.localPort} mapped to $port)"
+                    }
+                    else -> "endpoint-dependent mapping (symmetric NAT): hole punching will NOT work"
+                }
+                out.append("  nat ($label): $verdict\n")
+            }
+        } catch (e: Exception) {
+            out.append("  nat ($label): FAILED: $e\n")
+        }
+    }
+
+    /** One RFC 5389 binding request; returns "ip:port" from (XOR-)MAPPED-ADDRESS. */
+    private fun stunMappedAddress(s: java.net.DatagramSocket, host: String, port: Int): String? {
+        val addr = InetAddress.getAllByName(host).firstOrNull { it is java.net.Inet4Address } ?: return null
+        val tid = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+        val req = java.nio.ByteBuffer.allocate(20)
+            .putShort(0x0001).putShort(0).putInt(0x2112A442).put(tid).array()
+        s.send(java.net.DatagramPacket(req, req.size, addr, port))
+        val buf = ByteArray(1500)
+        val deadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < deadline) {
+            val pkt = java.net.DatagramPacket(buf, buf.size)
+            s.receive(pkt)
+            val b = java.nio.ByteBuffer.wrap(buf, 0, pkt.length)
+            if (pkt.length < 20 || b.getShort(0).toInt() != 0x0101) continue
+            if (!buf.copyOfRange(8, 20).contentEquals(tid)) continue
+            var off = 20
+            while (off + 4 <= pkt.length) {
+                val type = b.getShort(off).toInt() and 0xffff
+                val len = b.getShort(off + 2).toInt() and 0xffff
+                if (off + 4 + len > pkt.length) break
+                if ((type == 0x0020 || type == 0x0001) && len >= 8 && buf[off + 5].toInt() == 1) {
+                    var p = b.getShort(off + 6).toInt() and 0xffff
+                    var ip = b.getInt(off + 8)
+                    if (type == 0x0020) { p = p xor 0x2112; ip = ip xor 0x2112A442 }
+                    return "${(ip ushr 24) and 255}.${(ip ushr 16) and 255}.${(ip ushr 8) and 255}.${ip and 255}:$p"
+                }
+                off += 4 + ((len + 3) and 3.inv())
+            }
+            return null
+        }
+        return null
     }
 
     private fun udpProbe(
