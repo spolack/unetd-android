@@ -21,7 +21,7 @@ set -e
 
 HOST="${1:?usage: $0 <build/host dir> [<state dir>]}"
 STATE="${2:-/tmp/unetd-nat-testbed}"
-TIMEOUT="${TIMEOUT:-300}"
+TIMEOUT="${TIMEOUT:-420}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 UNETD="$HOST/unetd/unetd"
 UNET_TOOL="$HOST/unetd/unet-tool"
@@ -85,16 +85,24 @@ ip -n unt-ph route add default via 192.168.20.1
 
 # ---- a private DHT: ten nodes on the "internet" --------------------------------------
 BOOT=""
+DHT_BOOTSTRAP=""
 i=0
 while [ $i -lt 10 ]; do
 	p=$((6881 + i))
 	ip netns exec unt-inet "$DHTNODE" 10.100.1.1 $p $BOOT > "dht/node-$p.log" 2>&1 &
 	PIDS="$PIDS $!"
 	BOOT="$BOOT 10.100.1.1:$p"
+	# From the LANs, the DHT is reachable through the NATs on the inet addresses.
+	DHT_BOOTSTRAP="$DHT_BOOTSTRAP -b 10.100.1.1:$p"
 	i=$((i + 1))
 done
-# From the LANs, the DHT is reachable through the NATs on the inet addresses.
-DHT_BOOTSTRAP="-b 10.100.1.1:6881 -b 10.100.1.1:6882 -b 10.100.1.1:6883 -b 10.100.1.1:6884"
+# A ten-node DHT needs a moment to mesh (each node learns the others through
+# find_node on dht.c's own timers). A node that joins before that sees one or
+# two neighbours, takes minutes to reach unet-dht's readiness threshold
+# (4 good and 8 known nodes), and may then search a corner of the DHT the
+# announcement never reached. One run failed exactly like that.
+echo "letting the private DHT mesh..."
+sleep 20
 
 # ---- keys and the signed network ------------------------------------------------
 "$UNET_TOOL" -G -o net.key
