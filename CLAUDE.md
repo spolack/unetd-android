@@ -22,7 +22,8 @@ Look versions up from a primary source rather than from memory:
   carry a minor version now, e.g. `platforms;android-37.0`)
 - androidx.test: `https://developer.android.com/jetpack/androidx/releases/test`
 - Go: `https://go.dev/dl/?mode=json`
-- json-c, wireguard-go: upstream tags / HEAD (`git ls-remote`)
+- json-c: its latest release tag; wireguard-go: upstream HEAD (`git ls-remote`),
+  pinned as a pseudo-version in `native/libwg-go/go.mod`
 
 Things that move together, so bump them together:
 
@@ -33,9 +34,11 @@ Things that move together, so bump them together:
 - compileSdk/targetSdk cannot exceed AGP's maximum supported API level.
 - The JDK must be one Gradle lists as supported for running builds.
 
-Upstream `third_party/unetd`, `third_party/libubox` and `third_party/wireguard-go`
-track upstream HEAD, `third_party/json-c` its latest release tag; after bumping any
-of them, check that the patch series in `patches/` still applies
-(`scripts/apply-patches.sh`) and that `native/libwg-go/go.mod` still resolves
-(`go mod tidy` there). The submodule gitlinks are committed at the *pristine*
-upstream commit, never at a patched one.
+Upstream `third_party/unetd` and `third_party/libubox` track upstream HEAD,
+`third_party/json-c` its latest release tag; after bumping either, check that the
+patch series in `patches/` still applies (`scripts/apply-patches.sh`). The
+submodule gitlinks are committed at the *pristine* upstream commit, never at a
+patched one. wireguard-go is not a submodule: `native/libwg-go/go.mod` requires it
+at a pseudo-version of upstream HEAD (its tags are not Go semver); bump with
+`go get golang.zx2c4.com/wireguard@<commit> && go mod tidy` in that directory and
+re-pin the `golang.org/x/*` modules to their latest releases afterwards.

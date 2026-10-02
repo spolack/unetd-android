@@ -7,6 +7,3 @@
 [submodule "third_party/json-c"]
 	path = third_party/json-c
 	url = https://github.com/json-c/json-c.git
-[submodule "third_party/wireguard-go"]
-	path = third_party/wireguard-go
-	url = https://git.zx2c4.com/wireguard-go

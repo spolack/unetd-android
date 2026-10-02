@@ -82,8 +82,9 @@ endif()
 # ---- libwg-go --------------------------------------------------------------
 if(UNETD_BUILD_LIBWG_GO)
 	set(LIBWG_GO ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libwg-go.so)
-	file(GLOB_RECURSE WG_GO_SOURCES CONFIGURE_DEPENDS
-		${THIRD_PARTY}/wireguard-go/*.go
+	# wireguard-go itself is a Go module dependency (libwg-go/go.mod), fetched
+	# by Go; only the glue here is a build input.
+	file(GLOB WG_GO_SOURCES CONFIGURE_DEPENDS
 		${CMAKE_CURRENT_SOURCE_DIR}/libwg-go/*.go
 		${CMAKE_CURRENT_SOURCE_DIR}/libwg-go/*.c
 	)

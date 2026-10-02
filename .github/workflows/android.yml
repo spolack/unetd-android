@@ -48,8 +48,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      # unetd and wireguard-go are pristine upstream submodules; the Android
-      # changes are a patch series applied at build time.
+      # unetd is a pristine upstream submodule; the Android changes are a patch
+      # series applied at build time. wireguard-go is a Go module dependency.
       - name: Apply the patch series
         run: ./scripts/apply-patches.sh
 
@@ -192,7 +192,7 @@ jobs:
         run: ./scripts/apply-patches.sh
 
       # The router side: unetd + wireguard-go for the host, from the same
-      # patched sources, the way the host tests build them.
+      # patched unetd and the same wireguard-go module the app embeds.
       - name: Build unetd and wireguard-go for the runner
         run: |
           sudo apt-get update -qq

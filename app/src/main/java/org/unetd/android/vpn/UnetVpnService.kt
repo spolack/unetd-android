@@ -143,8 +143,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         val pfd = establish(tun) ?: return "Could not establish the VPN interface (permission revoked, or another VPN is active)"
 
         WgGo.wgSetProtector(this)
-        WgGo.wgSetSocketDirectory(socketDir)
-        wgHandle = WgGo.wgTurnOn(name, pfd.detachFd(), "")
+        wgHandle = WgGo.wgTurnOn(socketDir, name, pfd.detachFd())
         if (wgHandle < 0) return "wireguard-go failed to start; see the log"
 
         if (!Unetd.isRunning) {
@@ -238,7 +237,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
             stopTunnel("Could not re-establish the VPN interface")
             return
         }
-        wgHandle = WgGo.wgTurnOn(name, pfd.detachFd(), "")
+        wgHandle = WgGo.wgTurnOn(socketDir, name, pfd.detachFd())
         if (wgHandle < 0) {
             stopTunnel("wireguard-go failed to restart; see the log")
             return

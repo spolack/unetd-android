@@ -29,11 +29,10 @@ cmake -S "$ROOT/third_party/unetd" -B "$OUT/unetd" \
 	-DCMAKE_SHARED_LINKER_FLAGS="-L$PREFIX/lib" >/dev/null
 cmake --build "$OUT/unetd" -j"$(nproc)" >/dev/null
 
-echo "==> wireguard-go"
-if [ ! -d "$OUT/wireguard-go-src" ]; then
-	git clone -q --depth 1 https://github.com/WireGuard/wireguard-go.git "$OUT/wireguard-go-src"
-fi
-(cd "$OUT/wireguard-go-src" && go build -o "$OUT/wireguard-go" .)
+echo "==> wireguard-go (the module version libwg-go embeds)"
+# Built from the dependency pinned in native/libwg-go/go.mod, so the host tests
+# exercise exactly the wireguard-go the app ships.
+(cd "$ROOT/native/libwg-go" && go build -o "$OUT/wireguard-go" golang.zx2c4.com/wireguard)
 
 echo
 echo "built:"

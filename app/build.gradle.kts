@@ -4,9 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// Kept in gradle.properties because it is load-bearing beyond naming: wireguard-go
-// bakes its UAPI socket directory in at link time as /data/data/<pkg>/cache/wireguard,
-// and unetd must be built with a matching RUNSTATEDIR for wg-user.c to find it.
+// Kept in gradle.properties so the package name has a single home.
 val unetdPackageName: String = providers.gradleProperty("unetd.packageName").get()
 
 // Each CI build must be installable over the previous one, so versionCode is

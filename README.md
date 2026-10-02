@@ -38,13 +38,12 @@ and without reimplementing anything.
  └──────────────────────────────────────────────┘
 ```
 
-The hinge is a compile-time define. unetd looks for its UAPI socket at
-`RUNSTATEDIR/wireguard/<name>.sock`; wireguard-android builds `libwg-go` with
-`-X ...ipc.socketDirectory=/data/data/<pkg>/cache/wireguard`. Upstream
-wireguard-android already solves this identical problem the identical way for
-`wg(8)` — `tunnel/tools/CMakeLists.txt` compiles it with
-`-DRUNSTATEDIR="/data/data/${ANDROID_PACKAGE_NAME}/cache"`, the same macro name
-unetd uses.
+The hinge is one directory. unetd looks for its UAPI socket at
+`<socket dir>/<name>.sock` (patch 0005 makes the directory a runtime setting),
+and `libwg-go` serves the socket in the directory it is given at `wgTurnOn()`
+(`native/libwg-go/uapi.go`). The WireGuard app bakes `/data/data/<pkg>/cache`
+in at link time, which is only right for the primary Android user; here the
+service passes its own `filesDir`, so secondary users and work profiles work.
 
 ## What is proven
 
@@ -174,12 +173,13 @@ shows its VPN indicator while the tunnel is up; that is unavoidable.
 per-network PEX socket, which is bound to the in-tunnel address and must go
 *through* the tunnel. Sockets that must bypass it are `protect()`ed one by one:
 unetd's global PEX socket, STUN socket and local-address probe via the hook in
-patch 0006, and wireguard-go's UDP sockets at bind time via the control function
-in `patches/wireguard-go/0001` — which keeps them protected across the rebinds
-that every `listen_port` write triggers.
+patch 0006, and wireguard-go's UDP sockets whenever the device opens them, via
+the `conn.Bind` wrapper in `native/libwg-go/bind.go` — which keeps them
+protected across the rebinds that every `listen_port` write triggers. A refused
+`protect()` fails that bind instead of sending into the tunnel.
 
 ```
-./scripts/apply-patches.sh         # patch the unetd and wireguard-go submodules
+./scripts/apply-patches.sh         # patch the unetd submodule
 ./gradlew :app:assembleDebug       # → app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:assembleRelease     # → app/build/outputs/apk/release/ (minified)
 ```
@@ -206,9 +206,10 @@ on `main` is an update of the previous one.
 The Gradle build runs CMake with the NDK on `native/CMakeLists.txt`, which
 builds libubox (subset) + json-c + unetd + unet-dht + the wrapper into
 `libunet-android.so` and cross-compiles `libwg-go.so` with Go, using the NDK's
-clang as the C compiler, for arm64-v8a, armeabi-v7a and x86_64. Go and the NDK
-have to be available: `go` on PATH (or `GO_EXECUTABLE=/path/to/go`), the NDK is
-installed by AGP on demand.
+clang as the C compiler, for arm64-v8a, armeabi-v7a and x86_64. wireguard-go is
+a Go module dependency (`native/libwg-go/go.mod`, pinned to an upstream commit
+as a pseudo-version); Go fetches it. Go and the NDK have to be available: `go`
+on PATH (or `GO_EXECUTABLE=/path/to/go`), the NDK is installed by AGP on demand.
 
 ## Layout
 
@@ -217,12 +218,10 @@ app/                        Compose app, VpnService, DHT service, JNI bridges
 native/CMakeLists.txt       the native build, for the NDK and for the host
 native/core/                unetd as a library: uloop thread, command channel, status, log ring
 native/jni/                 JNI bindings for unetd and unet-dht
-native/libwg-go/            wireguard-go + JNI glue, built with Go (c-shared)
-patches/unetd/              ordered, individually upstreamable patch series (8)
-patches/wireguard-go/       same, for wireguard-go (2)
+native/libwg-go/            wireguard-go embedding: bind wrapper, UAPI listener, JNI glue (Go, c-shared)
+patches/unetd/              ordered, individually upstreamable patch series (12)
 third_party/unetd           submodule, pinned to 7c3213d (upstream HEAD)
 third_party/libubox         submodule (upstream HEAD)
-third_party/wireguard-go    submodule, pinned to ecfc5a8 (upstream HEAD)
 third_party/json-c          submodule, json-c-0.19-20260627
 scripts/                    apply-patches.sh, build-host.sh, build-libwg-go.sh
 tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
@@ -236,9 +235,10 @@ tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
 | `.github/workflows/android.yml`, job `emulator` | Runs the app on a stock Android emulator (API 37, x86_64, KVM) against a unetd router started on the runner (`tests/emulator/router.sh`): internet before the VPN, internet with the VPN up but nothing routed yet, the WireGuard handshake and HTTP through the tunnel, and internet after disconnecting. Runs twice: once with the router's address configured as gateway, once with no gateway at all, where the app's own DHT node has to find the router in a private DHT on the runner. |
 | `.github/workflows/host-tests.yml` | Applies the patch series, builds unetd + wireguard-go and the native layer for the host, runs M0 (once normally, once with `CAP_NET_RAW` dropped), M1a, M1b and the M1 NAT testbed. |
 
-Upstream is vendored as a submodule and the Android changes are kept as an
-ordered patch series rather than a fork, so each one stays submittable to
-upstream on its own.
+Upstream unetd is vendored as a submodule and the Android changes are kept as
+an ordered patch series rather than a fork, so each one stays submittable to
+upstream on its own. wireguard-go needs no patch at all: everything the app
+needs from it goes through public interfaces (see below).
 
 ## The patch series
 
@@ -257,12 +257,21 @@ upstream on its own.
 | `0011` udht: `-b` bootstrap option, five default routers | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. Those two (router.bittorrent.com, router.utorrent.com) also both stopped answering at some point in 2026, from a CI host as much as from a phone, which left every unet-dht unable to bootstrap; the default list now has five entries, and `dht.transmissionbt.com` answered in the same test. |
 | `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; the first few relayed packets, the first few received ones (forwarded to the DHT node or not) and the moment the DHT node attaches are logged. Added to find out why a phone's DHT pings got no answer. |
 
-And for wireguard-go (`patches/wireguard-go/`):
+### wireguard-go without patches
 
-| Patch | Why |
-|---|---|
-| `0001` conn: `AddControlFn` | Lets the embedder apply per-socket configuration before every bind. `Device.BindUpdate()` reopens the sockets on each `listen_port` write, so a `protect()` applied once after start silently stops holding. |
-| `0002` ipc: `SetSocketDirectory` | wireguard-android bakes `/data/data/<pkg>/cache/wireguard` in with a linker flag, which is only right for the primary Android user. |
+`native/libwg-go` used to carry two patches against wireguard-go; both are now
+plain Go in the embedding instead, and wireguard-go is an unmodified module
+dependency:
+
+- **`bind.go`**: a `conn.Bind` that wraps `StdNetBind` and offers every socket
+  the device opens to `VpnService.protect()` inside `Open()`. `Device.BindUpdate()`
+  reopens the sockets on each `listen_port` write, so a `protect()` applied
+  once after start silently stops holding; inside `Open()` it holds every time.
+  A refused `protect()` fails the bind, which wireguard-go reports back to
+  unetd as a failed `listen_port` write.
+- **`uapi.go`**: the UAPI listener in a directory given at run time. Upstream's
+  `ipc.UAPIOpen` uses a link-time directory and `ipc.UAPIListen` watches that
+  same path with inotify; neither is needed here.
 
 ### Why patch 0004 matters
 
@@ -283,19 +292,25 @@ phone after roaming). With no raw socket it now learns the auth port once and
 goes idle.
 
 What is genuinely lost without raw sockets is one trick: unetd forges UDP with
-the source port set to the *WireGuard* port so the NAT opens a mapping for it.
-On Android that is replaceable and arguably better — `wgGetSocketV4/V6` hand us
-wireguard-go's own UDP socket fd, so a plain `sendto()` on it sends from the
-real WireGuard port with no spoofing and no capability at all.
+the source port set to the *WireGuard* port, both to punch a NAT mapping for a
+peer and to ask a STUN server about that port while peers are connected. On
+Android the punch is done by wireguard-go's own handshake initiations to each
+endpoint candidate unetd rotates through, and the STUN query for the data port
+happens the way upstream does it when no peer is connected yet: unetd sets
+`listen_port` to 0, takes the WireGuard port over for the query, and hands it
+back (see `design-review.md`, section 3, for why a plain `sendto()` on the
+WireGuard socket could not replace this: the answer would land in wireguard-go,
+not in unetd).
 
 ## Known hazards, recorded before they bite
 
 - **Every `listen_port` write unprotects the WireGuard socket.** wireguard-go
   calls `BindUpdate()` on any `listen_port` UAPI write, which closes and reopens
-  its sockets with new fds, while `GoBackend` calls `VpnService.protect()` only
-  once at startup. unetd writes `listen_port` whenever the local host changes
-  and twice per STUN cycle. The fix is to protect at bind time inside Go by
-  appending to `conn.controlFns`, not to re-protect after the fact.
+  its sockets with new fds, while the WireGuard app's `GoBackend` calls
+  `VpnService.protect()` only once at startup. unetd writes `listen_port`
+  whenever the local host changes and twice per STUN cycle. The fix is to
+  protect inside `Bind.Open()` (`native/libwg-go/bind.go`), not to re-protect
+  after the fact.
 - **`addDisallowedApplication` is not a substitute for `protect()`.** It excludes
   the whole UID, including the per-network PEX socket, which is bound to the
   in-tunnel ULA and must go *through* the tunnel.
