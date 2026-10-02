@@ -12,4 +12,5 @@
 -keepclassmembers class * implements org.unetd.android.nativebridge.Unetd$Callbacks {
     public boolean protectSocket(int);
     public void onNetworkUpdate(java.lang.String);
+    public void onEvent(int, java.lang.String, java.lang.String);
 }

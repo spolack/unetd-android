@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <libubox/uloop.h>
@@ -70,17 +71,19 @@ void unetd_write_hosts(void)
 enum cmd_type {
 	CMD_NETWORK_ADD,
 	CMD_NETWORK_REMOVE,
-	CMD_STATUS,
 	CMD_STOP,
 };
 
 struct cmd {
 	enum cmd_type type;
-	const char *arg;
+	char *arg;
 	int ret;
-	char *out;
 	bool done;
 };
+
+#define CMD_TIMEOUT_MS		30000	/* add/remove: the loop may be in a DNS lookup */
+#define STOP_TIMEOUT_MS		10000
+#define STATUS_INTERVAL_MS	1000
 
 static struct {
 	pthread_mutex_t api_lock;	/* one caller at a time */
@@ -88,13 +91,24 @@ static struct {
 	pthread_cond_t cond;
 
 	pthread_t thread;
-	bool thread_alive;
+	bool thread_alive;		/* created and not yet joined */
+	bool thread_done;		/* core_thread() has returned */
 	bool running;			/* uloop up and accepting commands */
 	bool started;			/* startup handshake */
+	int start_error;		/* negative errno when startup failed */
 
-	struct cmd *cmd;
+	/*
+	 * The one command in flight. Static, not on a caller's stack, so a
+	 * caller that gave up waiting (the loop is stuck) leaves nothing
+	 * dangling for the loop to write to later.
+	 */
+	struct cmd pending;
+	bool cmd_posted;
 	int efd;
 	struct uloop_fd cmd_fd;
+
+	char *status;			/* the latest snapshot, JSON */
+	struct uloop_timeout status_timer;
 
 	struct unetd_core_callbacks cb;
 	char *data_dir;
@@ -102,7 +116,6 @@ static struct {
 	char *unix_socket;
 	int pex_port;
 	bool debug;
-	bool pex_ok;
 } core = {
 	.api_lock = PTHREAD_MUTEX_INITIALIZER,
 	.lock = PTHREAD_MUTEX_INITIALIZER,
@@ -110,59 +123,7 @@ static struct {
 	.efd = -1,
 };
 
-static void platform_protect_socket(int fd)
-{
-	if (core.cb.protect_socket)
-		core.cb.protect_socket(core.cb.priv, fd);
-}
-
-static void platform_network_update(struct network *net, struct blob_attr *data)
-{
-	char *json;
-
-	if (!core.cb.network_update)
-		return;
-
-	json = blobmsg_format_json(data, true);
-	if (!json)
-		return;
-	core.cb.network_update(core.cb.priv, json);
-	free(json);
-}
-
-static const struct unetd_platform_ops platform_ops = {
-	.protect_socket = platform_protect_socket,
-	.network_update = platform_network_update,
-};
-
-static int do_network_add(const char *json)
-{
-	static struct blob_buf b;
-	struct blob_attr *name;
-	int ret;
-
-	blob_buf_init(&b, 0);
-	if (!blobmsg_add_json_from_string(&b, json)) {
-		core_log("unetd: network config is not valid JSON");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	blobmsg_parse(&network_policy[NETWORK_ATTR_NAME], 1, &name,
-		      blobmsg_data(b.head), blobmsg_len(b.head));
-	if (!name) {
-		core_log("unetd: network config has no name");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	ret = unetd_network_add(blobmsg_get_string(name), b.head);
-	if (ret)
-		core_log("unetd: network_add(%s) failed", blobmsg_get_string(name));
-out:
-	blob_buf_free(&b);
-	return ret;
-}
+/* ---- the status snapshot (uloop thread) ---------------------------------- */
 
 static char *do_status(void)
 {
@@ -207,18 +168,122 @@ static char *do_status(void)
 	return json;
 }
 
+static void status_refresh(void)
+{
+	char *json = do_status();
+
+	if (!json)
+		return;
+	pthread_mutex_lock(&core.lock);
+	free(core.status);
+	core.status = json;
+	pthread_mutex_unlock(&core.lock);
+
+	/* Counters move while a network exists; nothing moves without one. */
+	if (!avl_is_empty(&networks))
+		uloop_timeout_set(&core.status_timer, STATUS_INTERVAL_MS);
+}
+
+static void status_timer_cb(struct uloop_timeout *t)
+{
+	status_refresh();
+}
+
+/* ---- platform hooks (uloop thread) --------------------------------------- */
+
+static bool protect_refused;	/* during start-up: the reason it failed */
+
+static bool platform_protect_socket(int fd)
+{
+	bool ok;
+
+	if (!core.cb.protect_socket)
+		return true;
+	ok = core.cb.protect_socket(core.cb.priv, fd);
+	if (!ok)
+		protect_refused = true;
+	return ok;
+}
+
+static void platform_network_update(struct network *net, struct blob_attr *data)
+{
+	char *json;
+
+	if (!core.cb.network_update)
+		return;
+
+	json = blobmsg_format_json(data, true);
+	if (!json)
+		return;
+	core.cb.network_update(core.cb.priv, json);
+	free(json);
+}
+
+static void platform_event(enum unetd_platform_event ev, struct network *net,
+			   const char *peer_name)
+{
+	static const enum unetd_core_event map[] = {
+		[UNETD_EV_PEER_UP] = UNETD_CORE_EV_PEER_UP,
+		[UNETD_EV_PEER_DOWN] = UNETD_CORE_EV_PEER_DOWN,
+		[UNETD_EV_NETWORK_RELOAD] = UNETD_CORE_EV_NETWORK_RELOAD,
+		[UNETD_EV_STUN_PORT] = UNETD_CORE_EV_STUN_PORT,
+	};
+
+	status_refresh();
+	if (core.cb.event)
+		core.cb.event(core.cb.priv, map[ev], net ? network_name(net) : NULL, peer_name);
+}
+
+static const struct unetd_platform_ops platform_ops = {
+	.protect_socket = platform_protect_socket,
+	.network_update = platform_network_update,
+	.event = platform_event,
+};
+
+/* ---- commands (uloop thread) ---------------------------------------------- */
+
+static int do_network_add(const char *json)
+{
+	static struct blob_buf b;
+	struct blob_attr *name;
+	int ret;
+
+	blob_buf_init(&b, 0);
+	if (!blobmsg_add_json_from_string(&b, json)) {
+		core_log("unetd: network config is not valid JSON");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	blobmsg_parse(&network_policy[NETWORK_ATTR_NAME], 1, &name,
+		      blobmsg_data(b.head), blobmsg_len(b.head));
+	if (!name) {
+		core_log("unetd: network config has no name");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = unetd_network_add(blobmsg_get_string(name), b.head);
+	if (ret)
+		core_log("unetd: network_add(%s) failed", blobmsg_get_string(name));
+out:
+	blob_buf_free(&b);
+	return ret;
+}
+
 static void cmd_fd_cb(struct uloop_fd *fd, unsigned int events)
 {
-	struct cmd *cmd;
+	struct cmd *cmd = &core.pending;
+	bool posted;
 	uint64_t v;
 
 	while (read(fd->fd, &v, sizeof(v)) > 0)
 		;
 
 	pthread_mutex_lock(&core.lock);
-	cmd = core.cmd;
+	posted = core.cmd_posted;
 	pthread_mutex_unlock(&core.lock);
-	if (!cmd)
+	if (!posted)
 		return;
 
 	switch (cmd->type) {
@@ -228,25 +293,45 @@ static void cmd_fd_cb(struct uloop_fd *fd, unsigned int events)
 	case CMD_NETWORK_REMOVE:
 		cmd->ret = unetd_network_remove(cmd->arg);
 		break;
-	case CMD_STATUS:
-		cmd->out = do_status();
-		cmd->ret = cmd->out ? 0 : -ENOMEM;
-		break;
 	case CMD_STOP:
 		cmd->ret = 0;
 		uloop_end();
 		break;
 	}
+	status_refresh();
 
 	pthread_mutex_lock(&core.lock);
 	cmd->done = true;
-	core.cmd = NULL;
+	core.cmd_posted = false;
 	pthread_cond_broadcast(&core.cond);
 	pthread_mutex_unlock(&core.lock);
 }
 
-static int run_cmd(struct cmd *cmd)
+/* Waits for cond with an absolute deadline; returns false on timeout. */
+static bool wait_until(const struct timespec *deadline)
 {
+	return pthread_cond_timedwait(&core.cond, &core.lock, deadline) != ETIMEDOUT;
+}
+
+static void deadline_in(struct timespec *ts, int ms)
+{
+	clock_gettime(CLOCK_REALTIME, ts);
+	ts->tv_sec += ms / 1000;
+	ts->tv_nsec += (long)(ms % 1000) * 1000000L;
+	if (ts->tv_nsec >= 1000000000L) {
+		ts->tv_sec++;
+		ts->tv_nsec -= 1000000000L;
+	}
+}
+
+/*
+ * Runs a command on the uloop thread and waits for it, at most timeout_ms.
+ * On a timeout the command stays posted and is still executed when the loop
+ * gets to it; until then every further command is refused with -EBUSY.
+ */
+static int run_cmd(enum cmd_type type, const char *arg, int timeout_ms)
+{
+	struct timespec deadline;
 	uint64_t one = 1;
 	int ret;
 
@@ -256,26 +341,40 @@ static int run_cmd(struct cmd *cmd)
 		ret = -ENOTCONN;
 		goto out;
 	}
+	if (core.cmd_posted) {
+		ret = -EBUSY;
+		goto out;
+	}
 
-	core.cmd = cmd;
+	free(core.pending.arg);
+	core.pending = (struct cmd){ .type = type, .arg = arg ? strdup(arg) : NULL };
+	core.cmd_posted = true;
 	if (write(core.efd, &one, sizeof(one)) != sizeof(one)) {
-		core.cmd = NULL;
+		core.cmd_posted = false;
 		ret = -EIO;
 		goto out;
 	}
 
-	while (!cmd->done && core.running)
-		pthread_cond_wait(&core.cond, &core.lock);
-	ret = cmd->done ? cmd->ret : -ENOTCONN;
+	deadline_in(&deadline, timeout_ms);
+	while (!core.pending.done && core.running) {
+		if (!wait_until(&deadline)) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+	}
+	ret = core.pending.done ? core.pending.ret : -ENOTCONN;
 out:
 	pthread_mutex_unlock(&core.lock);
 	pthread_mutex_unlock(&core.api_lock);
 	return ret;
 }
 
+/* ---- the thread ----------------------------------------------------------- */
+
 static void *core_thread(void *arg)
 {
 	struct sigaction sa_int, sa_term;
+	int err = 0;
 
 	if (core.cb.thread_started)
 		core.cb.thread_started(core.cb.priv);
@@ -303,33 +402,54 @@ static void *core_thread(void *arg)
 	core.cmd_fd.fd = core.efd;
 	core.cmd_fd.cb = cmd_fd_cb;
 	uloop_fd_add(&core.cmd_fd, ULOOP_READ);
+	core.status_timer.cb = status_timer_cb;
 
-	core.pex_ok = global_pex_open(core.unix_socket) == 0;
-	if (!core.pex_ok)
+	/*
+	 * Without the global PEX socket there is no peer exchange, no network
+	 * data and no DHT relay: not a degraded start but none at all.
+	 */
+	errno = 0;
+	protect_refused = false;
+	if (global_pex_open(core.unix_socket) < 0) {
+		err = protect_refused ? -EPERM : errno ? -errno : -EIO;
 		core_log("unetd: failed to open global PEX port %d: %s",
-			 global_pex_port, strerror(errno));
+			 global_pex_port, strerror(-err));
+	}
 
-	pthread_mutex_lock(&core.lock);
-	core.running = true;
-	core.started = true;
-	pthread_cond_broadcast(&core.cond);
-	pthread_mutex_unlock(&core.lock);
+	if (!err) {
+		status_refresh();
+		pthread_mutex_lock(&core.lock);
+		core.running = true;
+		core.started = true;
+		pthread_cond_broadcast(&core.cond);
+		pthread_mutex_unlock(&core.lock);
 
-	uloop_run();
+		uloop_run();
 
-	network_free_all();
+		network_free_all();
+		status_refresh();	/* the empty snapshot, for a reader mid-stop */
+		uloop_timeout_cancel(&core.status_timer);
+	}
+
 	pex_close();
 	uloop_fd_delete(&core.cmd_fd);
 	uloop_done();
 	unetd_platform = NULL;
+	data_dir = UNETD_DATA_DIR;
+	wg_user_socket_dir = RUNSTATEDIR "/wireguard";
 
 	pthread_mutex_lock(&core.lock);
 	core.running = false;
-	if (core.cmd) {
-		core.cmd->done = true;
-		core.cmd->ret = -ECANCELED;
-		core.cmd = NULL;
+	core.start_error = err;
+	core.started = true;
+	if (core.cmd_posted) {
+		core.pending.done = true;
+		core.pending.ret = -ECANCELED;
+		core.cmd_posted = false;
 	}
+	free(core.status);
+	core.status = NULL;
+	core.thread_done = true;
 	pthread_cond_broadcast(&core.cond);
 	pthread_mutex_unlock(&core.lock);
 
@@ -346,9 +466,27 @@ static void free_config(void)
 	core.data_dir = core.socket_dir = core.unix_socket = NULL;
 }
 
+/* Joins a finished thread. Called with api_lock held. */
+static void reap_thread(void)
+{
+	pthread_join(core.thread, NULL);
+	core.thread_alive = false;
+	core.thread_done = false;
+	if (core.efd >= 0) {
+		close(core.efd);
+		core.efd = -1;
+	}
+	if (core.unix_socket)
+		unlink(core.unix_socket);
+	free(core.pending.arg);
+	core.pending.arg = NULL;
+	free_config();
+}
+
 int unetd_core_start(const struct unetd_core_config *cfg,
 		     const struct unetd_core_callbacks *cb)
 {
+	bool done;
 	int ret = 0;
 
 	if (!cfg || !cfg->data_dir || !cfg->socket_dir)
@@ -356,8 +494,14 @@ int unetd_core_start(const struct unetd_core_config *cfg,
 
 	pthread_mutex_lock(&core.api_lock);
 	if (core.thread_alive) {
-		ret = -EALREADY;
-		goto out;
+		pthread_mutex_lock(&core.lock);
+		done = core.thread_done;
+		pthread_mutex_unlock(&core.lock);
+		if (!done) {
+			ret = -EALREADY;
+			goto out;
+		}
+		reap_thread();	/* a stop that timed out, now finished */
 	}
 
 	core.cb = cb ? *cb : (struct unetd_core_callbacks){};
@@ -366,8 +510,11 @@ int unetd_core_start(const struct unetd_core_config *cfg,
 	core.unix_socket = cfg->unix_socket ? strdup(cfg->unix_socket) : NULL;
 	core.pex_port = cfg->pex_port > 0 ? cfg->pex_port : UNETD_GLOBAL_PEX_PORT;
 	core.debug = cfg->debug;
-	mkdir_p(core.data_dir, 0700);
-	mkdir_p(core.socket_dir, 0700);
+	if (mkdir_p(core.data_dir, 0700) < 0 || mkdir_p(core.socket_dir, 0700) < 0) {
+		ret = -errno;
+		free_config();
+		goto out;
+	}
 	if (core.unix_socket)
 		unlink(core.unix_socket);
 
@@ -380,6 +527,9 @@ int unetd_core_start(const struct unetd_core_config *cfg,
 
 	core.started = false;
 	core.running = false;
+	core.thread_done = false;
+	core.start_error = 0;
+	core.cmd_posted = false;
 	if (pthread_create(&core.thread, NULL, core_thread, NULL) != 0) {
 		ret = -EAGAIN;
 		close(core.efd);
@@ -392,31 +542,44 @@ int unetd_core_start(const struct unetd_core_config *cfg,
 	pthread_mutex_lock(&core.lock);
 	while (!core.started)
 		pthread_cond_wait(&core.cond, &core.lock);
+	ret = core.running ? 0 : core.start_error;
 	pthread_mutex_unlock(&core.lock);
+	if (ret)
+		reap_thread();
 out:
 	pthread_mutex_unlock(&core.api_lock);
 	return ret;
 }
 
-void unetd_core_stop(void)
+int unetd_core_stop(void)
 {
-	struct cmd cmd = { .type = CMD_STOP };
+	bool done;
+	int ret;
 
-	run_cmd(&cmd);
+	ret = run_cmd(CMD_STOP, NULL, STOP_TIMEOUT_MS);
+	if (ret == -ETIMEDOUT)
+		core_log("unetd: stop timed out, the event loop is stuck; it will finish on its own");
 
 	pthread_mutex_lock(&core.api_lock);
 	if (core.thread_alive) {
-		pthread_join(core.thread, NULL);
-		core.thread_alive = false;
+		pthread_mutex_lock(&core.lock);
+		done = core.thread_done;
+		if (!done && ret != -ETIMEDOUT) {
+			/* the loop acknowledged the stop: its exit is bounded */
+			while (!core.thread_done)
+				pthread_cond_wait(&core.cond, &core.lock);
+			done = true;
+		}
+		pthread_mutex_unlock(&core.lock);
+		if (done) {
+			reap_thread();
+			ret = 0;
+		}
+	} else {
+		ret = 0;
 	}
-	if (core.efd >= 0) {
-		close(core.efd);
-		core.efd = -1;
-	}
-	if (core.unix_socket)
-		unlink(core.unix_socket);
-	free_config();
 	pthread_mutex_unlock(&core.api_lock);
+	return ret;
 }
 
 bool unetd_core_running(void)
@@ -431,29 +594,26 @@ bool unetd_core_running(void)
 
 int unetd_core_network_add(const char *json)
 {
-	struct cmd cmd = { .type = CMD_NETWORK_ADD, .arg = json };
-
 	if (!json)
 		return -EINVAL;
-	return run_cmd(&cmd);
+	return run_cmd(CMD_NETWORK_ADD, json, CMD_TIMEOUT_MS);
 }
 
 int unetd_core_network_remove(const char *name)
 {
-	struct cmd cmd = { .type = CMD_NETWORK_REMOVE, .arg = name };
-
 	if (!name)
 		return -EINVAL;
-	return run_cmd(&cmd);
+	return run_cmd(CMD_NETWORK_REMOVE, name, CMD_TIMEOUT_MS);
 }
 
 char *unetd_core_status_json(void)
 {
-	struct cmd cmd = { .type = CMD_STATUS };
+	char *copy;
 
-	if (run_cmd(&cmd) < 0)
-		return NULL;
-	return cmd.out;
+	pthread_mutex_lock(&core.lock);
+	copy = core.running && core.status ? strdup(core.status) : NULL;
+	pthread_mutex_unlock(&core.lock);
+	return copy;
 }
 
 /* ---- keys -------------------------------------------------------------- */
@@ -473,26 +633,30 @@ static int random_bytes(void *buf, size_t len)
 int unetd_core_generate_key(char *priv_b64, size_t priv_len, char *pub_b64, size_t pub_len)
 {
 	uint8_t priv[CURVE25519_KEY_SIZE], pub[CURVE25519_KEY_SIZE];
+	int ret = -1;
 
 	if (random_bytes(priv, sizeof(priv)) < 0)
 		return -1;
 	curve25519_clamp_secret(priv);
 	curve25519_generate_public(pub, priv);
 
-	if (b64_encode(priv, sizeof(priv), priv_b64, priv_len) < 0 ||
-	    b64_encode(pub, sizeof(pub), pub_b64, pub_len) < 0)
-		return -1;
-	return 0;
+	if (b64_encode(priv, sizeof(priv), priv_b64, priv_len) >= 0 &&
+	    b64_encode(pub, sizeof(pub), pub_b64, pub_len) >= 0)
+		ret = 0;
+	memset(priv, 0, sizeof(priv));
+	return ret;
 }
 
 int unetd_core_public_key(const char *priv_b64, char *pub_b64, size_t pub_len)
 {
 	uint8_t priv[CURVE25519_KEY_SIZE], pub[CURVE25519_KEY_SIZE];
+	int ret = -1;
 
 	if (!priv_b64 || b64_decode(priv_b64, priv, sizeof(priv)) != sizeof(priv))
 		return -1;
 	curve25519_generate_public(pub, priv);
-	if (b64_encode(pub, sizeof(pub), pub_b64, pub_len) < 0)
-		return -1;
-	return 0;
+	if (b64_encode(pub, sizeof(pub), pub_b64, pub_len) >= 0)
+		ret = 0;
+	memset(priv, 0, sizeof(priv));
+	return ret;
 }

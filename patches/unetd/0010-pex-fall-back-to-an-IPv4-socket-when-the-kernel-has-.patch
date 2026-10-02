@@ -23,7 +23,7 @@ Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
  1 file changed, 74 insertions(+), 5 deletions(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
-index 7885952..de088db 100644
+index 28ed574..13dfd84 100644
 --- a/pex-msg.c
 +++ b/pex-msg.c
 @@ -44,6 +44,9 @@ int pex_raw_socket(int family)
@@ -153,7 +153,7 @@ index 7885952..de088db 100644
  	if (fd < 0)
  		goto close_urandom;
  
-@@ -679,7 +747,8 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
+@@ -682,7 +750,8 @@ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server)
  		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
  		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
  		setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));

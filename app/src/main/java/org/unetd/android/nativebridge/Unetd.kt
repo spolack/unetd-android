@@ -15,7 +15,11 @@ object Unetd {
     }
 
     interface Callbacks {
-        /** A socket that must bypass the tunnel; return VpnService.protect(fd). */
+        /**
+         * A socket that must bypass the tunnel; return VpnService.protect(fd).
+         * False makes unetd close the socket and fail what needed it: a refused
+         * global PEX socket fails [start] with -EPERM.
+         */
         fun protectSocket(fd: Int): Boolean
 
         /**
@@ -23,9 +27,26 @@ object Unetd {
          * `{"ifname","link-up","ipaddr":[],"ip6addr":[],"routes":[],"routes6":[]}`.
          */
         fun onNetworkUpdate(json: String)
+
+        /**
+         * A state change ([EV_PEER_UP] ...); [status] is already refreshed when
+         * this runs. [peer] is set for the peer events only.
+         */
+        fun onEvent(kind: Int, network: String?, peer: String?)
     }
 
-    /** Returns 0 on success, a negative errno otherwise. */
+    const val EV_PEER_UP = 0
+    const val EV_PEER_DOWN = 1
+    const val EV_NETWORK_RELOAD = 2
+    const val EV_STUN_PORT = 3
+
+    /** Errors [start] returns, as negative errno values. */
+    const val EALREADY = -114
+    const val EADDRINUSE = -98
+    const val EPERM = -1
+    const val ETIMEDOUT = -110
+
+    /** Returns 0 on success, a negative errno otherwise (see [EALREADY], [EADDRINUSE], [EPERM]). */
     fun start(
         dataDir: String,
         socketDir: String,
@@ -35,14 +56,15 @@ object Unetd {
         callbacks: Callbacks,
     ): Int = nativeStart(dataDir, socketDir, unixSocket, pexPort, debug, callbacks)
 
-    fun stop() = nativeStop()
+    /** 0, or [ETIMEDOUT] when the loop is stuck; it then finishes on its own. */
+    fun stop(): Int = nativeStop()
     val isRunning: Boolean get() = nativeRunning()
 
     /** The same JSON as unetd's -N option. 0 on success. */
     fun networkAdd(json: String): Int = nativeNetworkAdd(json)
     fun networkRemove(name: String): Int = nativeNetworkRemove(name)
 
-    /** Status of every network, or null when unetd is not running. */
+    /** The latest status snapshot of every network, or null when unetd is not running. Never blocks. */
     fun status(): String? = nativeStatus()
 
     fun startLogCapture() = nativeStartLogCapture()
@@ -74,7 +96,7 @@ object Unetd {
         dataDir: String, socketDir: String, unixSocket: String?, pexPort: Int,
         debug: Boolean, callbacks: Callbacks,
     ): Int
-    private external fun nativeStop()
+    private external fun nativeStop(): Int
     private external fun nativeRunning(): Boolean
     private external fun nativeNetworkAdd(json: String): Int
     private external fun nativeNetworkRemove(name: String): Int

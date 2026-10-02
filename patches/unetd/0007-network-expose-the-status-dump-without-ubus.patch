@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
  3 files changed, 89 insertions(+), 88 deletions(-)
 
 diff --git a/network.c b/network.c
-index 7bc2c45..ac5d204 100644
+index c852192..3a6989d 100644
 --- a/network.c
 +++ b/network.c
 @@ -498,6 +498,92 @@ bool network_skip_endpoint_route(struct network *net, union network_endpoint *ep

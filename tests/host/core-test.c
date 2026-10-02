@@ -14,6 +14,7 @@
  * Environment: CORE_TEST_UNIX_SOCKET (control socket path), CORE_TEST_HOLD (seconds)
  * A wireguard-go instance must already be serving <socket-dir>/<name>.sock.
  */
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -26,7 +27,8 @@
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static char *last_update;
-static int updates_up, updates_down, protects;
+static int updates_up, updates_down, protects, reloads, peer_events;
+static bool refuse_protect;	/* the next protect() answers false */
 
 static void on_update(void *priv, const char *json)
 {
@@ -40,10 +42,25 @@ static void on_update(void *priv, const char *json)
 	pthread_mutex_unlock(&lock);
 }
 
-static void on_protect(void *priv, int fd)
+static bool on_protect(void *priv, int fd)
 {
+	bool ok;
+
 	pthread_mutex_lock(&lock);
 	protects++;
+	ok = !refuse_protect;
+	refuse_protect = false;
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+static void on_event(void *priv, enum unetd_core_event ev, const char *network, const char *peer)
+{
+	pthread_mutex_lock(&lock);
+	if (ev == UNETD_CORE_EV_NETWORK_RELOAD)
+		reloads++;
+	else if (ev == UNETD_CORE_EV_PEER_UP || ev == UNETD_CORE_EV_PEER_DOWN)
+		peer_events++;
 	pthread_mutex_unlock(&lock);
 }
 
@@ -100,20 +117,47 @@ static void one_cycle(const struct unetd_core_config *cfg,
 		      const struct unetd_core_callbacks *cb, const char *json, int round)
 {
 	char *status, *key;
-	int up_before, protects_before;
+	int up_before, protects_before, reloads_before;
 	bool pex_socket;
 
 	pthread_mutex_lock(&lock);
 	up_before = updates_up;
 	protects_before = protects;
+	reloads_before = reloads;
 	pthread_mutex_unlock(&lock);
+
+	if (round == 2) {
+		/*
+		 * A refused protect() for the global PEX socket must fail the
+		 * start with -EPERM and leave nothing behind for the real start.
+		 */
+		char *status;
+		int rc;
+
+		pthread_mutex_lock(&lock);
+		refuse_protect = true;
+		pthread_mutex_unlock(&lock);
+		rc = unetd_core_start(cfg, cb);
+		pthread_mutex_lock(&lock);
+		refuse_protect = false;
+		pthread_mutex_unlock(&lock);
+		if (rc != -EPERM)
+			fail("start with a refused protect() must fail with -EPERM");
+		status = unetd_core_status_json();
+		if (status)
+			fail("status available while not running");
+	}
 
 	if (unetd_core_start(cfg, cb))
 		fail("start");
 	if (!unetd_core_running())
 		fail("not running after start");
-	if (unetd_core_start(cfg, cb) == 0)
-		fail("second start should be refused");
+	if (unetd_core_start(cfg, cb) != -EALREADY)
+		fail("second start should be refused with -EALREADY");
+	status = unetd_core_status_json();
+	if (!status || !strstr(status, "\"networks\":{}"))
+		fail("no empty status snapshot right after start");
+	free(status);
 
 	if (unetd_core_network_add(json))
 		fail("network_add");
@@ -151,6 +195,8 @@ static void one_cycle(const struct unetd_core_config *cfg,
 		fail("the global PEX socket was not offered for protect()");
 	if (!pex_socket)
 		printf("round %d: no global PEX socket (no IPv6 here), protect() check skipped\n", round);
+	if (reloads <= reloads_before)
+		fail("no NETWORK_RELOAD event after network_add");
 	printf("round %d update: %s\n", round, last_update);
 	pthread_mutex_unlock(&lock);
 
@@ -177,9 +223,12 @@ static void one_cycle(const struct unetd_core_config *cfg,
 		fail("no link-down update on remove");
 	pthread_mutex_unlock(&lock);
 
-	unetd_core_stop();
+	if (unetd_core_stop() != 0)
+		fail("stop did not return 0");
 	if (unetd_core_running())
 		fail("still running after stop");
+	if (unetd_core_status_json())
+		fail("status still available after stop");
 	if (unetd_core_network_add(json) != -107 /* -ENOTCONN */)
 		fail("network_add after stop should fail with -ENOTCONN");
 	printf("round %d ok\n", round);
@@ -191,6 +240,7 @@ int main(int argc, char **argv)
 	struct unetd_core_callbacks cb = {
 		.protect_socket = on_protect,
 		.network_update = on_update,
+		.event = on_event,
 	};
 	char priv[UNETD_KEY_B64_LEN], pub[UNETD_KEY_B64_LEN], pub2[UNETD_KEY_B64_LEN];
 	char *tail;

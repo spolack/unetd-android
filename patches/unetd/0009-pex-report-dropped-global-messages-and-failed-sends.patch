@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
  2 files changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
-index 79aceb1..7885952 100644
+index 011b65c..28ed574 100644
 --- a/pex-msg.c
 +++ b/pex-msg.c
 @@ -346,6 +346,9 @@ int __pex_msg_send(int fd, const void *addr, void *ip_hdr, size_t ip_hdrlen)

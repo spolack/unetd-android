@@ -214,6 +214,10 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         return ok
     }
 
+    override fun onEvent(kind: Int, network: String?, peer: String?) {
+        TunnelRuntime.requestRefresh()
+    }
+
     override fun onNetworkUpdate(json: String) {
         Log.d(TAG, "interface update: $json")
         TunnelRuntime.requestRefresh()

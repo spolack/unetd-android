@@ -6,7 +6,9 @@
  * upcalls -- protectSocket() and onNetworkUpdate() -- come from the uloop
  * thread, which is attached to the JVM once for its whole lifetime.
  */
+#include <errno.h>
 #include <jni.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +21,9 @@ static JavaVM *jvm;
 static jobject callbacks;		/* global ref to an Unetd.Callbacks */
 static jmethodID m_protect;		/* boolean protectSocket(int) */
 static jmethodID m_update;		/* void onNetworkUpdate(String) */
+static jmethodID m_event;		/* void onEvent(int, String, String) */
 static JNIEnv *uloop_env;		/* valid between thread_started/stopping */
+static pthread_t uloop_thread;		/* whose env that is */
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved)
 {
@@ -33,7 +37,7 @@ static JNIEnv *current_env(int *attached)
 	jint st;
 
 	*attached = 0;
-	if (uloop_env)
+	if (uloop_env && pthread_equal(pthread_self(), uloop_thread))
 		return uloop_env;
 	st = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6);
 	if (st == JNI_OK)
@@ -47,6 +51,7 @@ static JNIEnv *current_env(int *attached)
 
 static void cb_thread_started(void *priv)
 {
+	uloop_thread = pthread_self();
 	(*jvm)->AttachCurrentThread(jvm, &uloop_env, NULL);
 }
 
@@ -56,7 +61,7 @@ static void cb_thread_stopping(void *priv)
 	(*jvm)->DetachCurrentThread(jvm);
 }
 
-static void cb_protect_socket(void *priv, int fd)
+static bool cb_protect_socket(void *priv, int fd)
 {
 	int attached;
 	JNIEnv *env = current_env(&attached);
@@ -64,7 +69,7 @@ static void cb_protect_socket(void *priv, int fd)
 	char line[64];
 
 	if (!env || !callbacks)
-		return;
+		return false;
 	/* One line per socket, success included: on a phone with always-on and
 	 * lockdown, every byte depends on this having worked. */
 	ok = (*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd);
@@ -75,6 +80,28 @@ static void cb_protect_socket(void *priv, int fd)
 	}
 	snprintf(line, sizeof(line), "unetd: VpnService.protect(%d) -> %s", fd, ok ? "ok" : "REFUSED");
 	unetd_log_push(line);
+	if (attached)
+		(*jvm)->DetachCurrentThread(jvm);
+	return ok;
+}
+
+static void cb_event(void *priv, enum unetd_core_event ev, const char *network, const char *peer)
+{
+	int attached;
+	JNIEnv *env = current_env(&attached);
+	jstring n, p;
+
+	if (!env || !callbacks)
+		return;
+	n = network ? (*env)->NewStringUTF(env, network) : NULL;
+	p = peer ? (*env)->NewStringUTF(env, peer) : NULL;
+	(*env)->CallVoidMethod(env, callbacks, m_event, (jint)ev, n, p);
+	if ((*env)->ExceptionCheck(env))
+		(*env)->ExceptionClear(env);
+	if (n)
+		(*env)->DeleteLocalRef(env, n);
+	if (p)
+		(*env)->DeleteLocalRef(env, p);
 	if (attached)
 		(*jvm)->DetachCurrentThread(jvm);
 }
@@ -103,6 +130,7 @@ static const struct unetd_core_callbacks core_callbacks = {
 	.thread_stopping = cb_thread_stopping,
 	.protect_socket = cb_protect_socket,
 	.network_update = cb_network_update,
+	.event = cb_event,
 };
 
 static char *dup_jstring(JNIEnv *env, jstring s)
@@ -137,6 +165,11 @@ Java_org_unetd_android_nativebridge_Unetd_nativeStart(JNIEnv *env, jobject thiz,
 	};
 	int ret;
 
+	/* The running loop may be using the current callbacks: leave them alone. */
+	if (unetd_core_running()) {
+		ret = -EALREADY;
+		goto out;
+	}
 	if (callbacks) {
 		(*env)->DeleteGlobalRef(env, callbacks);
 		callbacks = NULL;
@@ -146,7 +179,8 @@ Java_org_unetd_android_nativebridge_Unetd_nativeStart(JNIEnv *env, jobject thiz,
 
 		m_protect = (*env)->GetMethodID(env, cls, "protectSocket", "(I)Z");
 		m_update = (*env)->GetMethodID(env, cls, "onNetworkUpdate", "(Ljava/lang/String;)V");
-		if (!m_protect || !m_update) {
+		m_event = (*env)->GetMethodID(env, cls, "onEvent", "(ILjava/lang/String;Ljava/lang/String;)V");
+		if (!m_protect || !m_update || !m_event) {
 			(*env)->ExceptionClear(env);
 			ret = -1;
 			goto out;
@@ -162,14 +196,17 @@ out:
 	return ret;
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jint JNICALL
 Java_org_unetd_android_nativebridge_Unetd_nativeStop(JNIEnv *env, jobject thiz)
 {
-	unetd_core_stop();
-	if (callbacks) {
+	int ret = unetd_core_stop();
+
+	/* On a timeout the loop still runs and may call back: keep the ref. */
+	if (ret == 0 && callbacks) {
 		(*env)->DeleteGlobalRef(env, callbacks);
 		callbacks = NULL;
 	}
+	return ret;
 }
 
 JNIEXPORT jboolean JNICALL

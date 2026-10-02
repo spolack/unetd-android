@@ -23,7 +23,7 @@ Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
  1 file changed, 56 insertions(+), 1 deletion(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
-index de088db..6d0443f 100644
+index 13dfd84..e0c2b7e 100644
 --- a/pex-msg.c
 +++ b/pex-msg.c
 @@ -103,6 +103,35 @@ pex_fd_sockaddr(const void *addr, socklen_t *len)
