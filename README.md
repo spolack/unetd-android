@@ -275,6 +275,12 @@ zero-initialised static storage, so afterwards `pex_socket()` returned **fd 0**
 and callers wrote datagrams to stdin.
 
 The patch degrades instead of failing, and initialises the descriptors to `-1`.
+It also stops a STUN query storm: learning the peer-exchange port's external
+mapping is upstream's first step towards the WireGuard port's, which needs a
+raw socket to forge. Without one that second step is unreachable, and the
+state machine re-queried the servers forever (about twenty a second, seen on a
+phone after roaming). With no raw socket it now learns the auth port once and
+goes idle.
 
 What is genuinely lost without raw sockets is one trick: unetd forges UDP with
 the source port set to the *WireGuard* port so the NAT opens a mapping for it.

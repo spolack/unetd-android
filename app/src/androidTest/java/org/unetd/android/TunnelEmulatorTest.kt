@@ -150,6 +150,15 @@ class TunnelEmulatorTest {
         waitFor("the status to carry the STUN result", 10_000) {
             TunnelRuntime.status.value.capabilities.let { it.stunExternalPort != null || it.stunAuthExternalPort != null }
         }
+        // Without a raw socket unetd can only learn the auth port, never the
+        // WireGuard data port; it must stop after the first query instead of
+        // re-querying forever (the STUN storm, ~20/s). Let a few seconds pass,
+        // then check the recent log is not dominated by STUN queries: during a
+        // storm the ring is almost all of them, after the fix a tiny fraction.
+        Thread.sleep(8_000)
+        val recent = Unetd.logTail(400).lines()
+        val stunSends = recent.count { it.contains("Send STUN query") }
+        assertTrue("STUN must idle, not storm: $stunSends of ${recent.size} recent lines are STUN queries", stunSends < recent.size / 4)
     }
 
     @Test

@@ -64,7 +64,7 @@ index 378d948..79aceb1 100644
  	fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
  
 diff --git a/pex-stun.c b/pex-stun.c
-index 210cf4b..382ca90 100644
+index f01f158..3f8485e 100644
 --- a/pex-stun.c
 +++ b/pex-stun.c
 @@ -109,6 +109,8 @@ network_stun_open_socket(struct network *net)
