@@ -25,12 +25,16 @@ data class TunnelConfig(
     /**
      * Seconds between WireGuard keepalives. unetd only attempts connections at all
      * when this is non-zero, so 0 is "never connect" rather than "no keepalive".
+     * Every keepalive wakes the radio; 25 still beats the usual UDP NAT timeouts
+     * (30 s one-way, 120 s and more once replied) and is what the WireGuard app
+     * uses. unetd also derives its peer-down detection from it (idle > 2x).
      */
-    val keepalive: Int = 10,
+    val keepalive: Int = 25,
     val dht: Boolean = true,
     /** DHT bootstrap nodes, `host[:port]`; empty means the public BitTorrent routers. */
     val dhtBootstrap: List<String> = emptyList(),
-    val debug: Boolean = true,
+    /** Verbose unetd and wireguard-go logs. Off by default: it costs CPU and storage all day. */
+    val debug: Boolean = false,
     /** Advanced: a complete unetd network JSON used verbatim instead of the fields above. */
     val rawJson: String = "",
 ) {
@@ -83,10 +87,10 @@ data class TunnelConfig(
                 privateKey = o.optString("privateKey", ""),
                 authKey = o.optString("authKey", ""),
                 gateways = if (gw == null) emptyList() else List(gw.length()) { gw.getString(it) },
-                keepalive = o.optInt("keepalive", 10),
+                keepalive = o.optInt("keepalive", 25),
                 dht = o.optBoolean("dht", true),
                 dhtBootstrap = if (bs == null) emptyList() else List(bs.length()) { bs.getString(it) },
-                debug = o.optBoolean("debug", true),
+                debug = o.optBoolean("debug", false),
                 rawJson = o.optString("rawJson", ""),
             )
         }.getOrNull()

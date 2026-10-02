@@ -26,6 +26,7 @@ class UdhtService : Service() {
     private var worker: Thread? = null
     private var mirror: Thread? = null
     @Volatile private var stopping = false
+    @Volatile private var stopReason: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -33,6 +34,7 @@ class UdhtService : Service() {
         if (intent == null) return START_NOT_STICKY
         if (intent.action == ACTION_STOP) {
             stopping = true
+            stopReason = intent.getStringExtra(EXTRA_REASON)
             Udht.requestStop()
             stopSelf()
             return START_NOT_STICKY
@@ -47,8 +49,10 @@ class UdhtService : Service() {
         val debug = intent.getBooleanExtra(EXTRA_DEBUG, false)
 
         stopping = false
+        stopReason = null
         worker = Thread({
             Unetd.startLogCapture() // same library, this process: lines go to logcat as "unetd"
+            if (!debug) Unetd.log("unet-dht started; enable the verbose log in Setup for its trace")
             while (!stopping) {
                 val rc = Udht.run(unixSocket, idString, nodeFile, keys, bootstrap, debug)
                 Log.i(TAG, "unet-dht returned $rc")
@@ -62,7 +66,7 @@ class UdhtService : Service() {
         mirror = Thread({
             while (worker?.isAlive == true) {
                 DhtLog.write(this, Unetd.logTail(400))
-                try { Thread.sleep(2_000) } catch (_: InterruptedException) { break }
+                try { Thread.sleep(3_000) } catch (_: InterruptedException) { break }
             }
             DhtLog.write(this, Unetd.logTail(400))
         }, "dht-log-mirror").also { it.isDaemon = true; it.start() }
@@ -74,7 +78,7 @@ class UdhtService : Service() {
         Udht.requestStop()
         worker?.join(3_000)
         mirror?.interrupt()
-        DhtLog.write(this, Unetd.logTail(400))
+        DhtLog.write(this, Unetd.logTail(400) + "\n" + DhtLog.STOPPED_MARKER + (stopReason ?: "service destroyed") + "\n")
         super.onDestroy()
         // The DHT library keeps file-scope state; a fresh process next time is the
         // simplest way to be sure none of it carries over.
@@ -90,6 +94,7 @@ class UdhtService : Service() {
         private const val EXTRA_AUTH_KEYS = "auth_keys"
         private const val EXTRA_BOOTSTRAP = "bootstrap"
         private const val EXTRA_DEBUG = "debug"
+        private const val EXTRA_REASON = "reason"
 
         fun startIntent(
             context: Context,
@@ -107,7 +112,7 @@ class UdhtService : Service() {
             .putExtra(EXTRA_BOOTSTRAP, bootstrap.toTypedArray())
             .putExtra(EXTRA_DEBUG, debug)
 
-        fun stopIntent(context: Context): Intent =
-            Intent(context, UdhtService::class.java).setAction(ACTION_STOP)
+        fun stopIntent(context: Context, reason: String): Intent =
+            Intent(context, UdhtService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_REASON, reason)
     }
 }

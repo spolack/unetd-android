@@ -1,5 +1,6 @@
 package org.unetd.android.vpn
 
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +26,16 @@ object TunnelRuntime {
 
     private val _status = MutableStateFlow(empty)
     val status: StateFlow<NetworkStatus> = _status.asStateFlow()
+
+    /** True while an activity of ours is started; the service polls unetd often only then. */
+    val uiVisible = MutableStateFlow(false)
+
+    /** Nudges the service's status poll ahead of schedule (an interface update, the UI coming up). */
+    val refresh = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    fun requestRefresh() {
+        refresh.tryEmit(Unit)
+    }
 
     fun set(status: NetworkStatus) {
         _status.value = status

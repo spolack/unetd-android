@@ -18,6 +18,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.unetd.android.BuildConfig
@@ -66,6 +72,8 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
     private var currentTun: TunSettings? = null
     private var statusJob: Job? = null
     private var dhtPing: Runnable? = null
+    private var dhtRunning = false
+    @Volatile private var lastPeerConnectedAt = 0L
     private var lastNotificationText: String? = null
 
     private val dataDir get() = File(filesDir, "unetd").absolutePath
@@ -209,6 +217,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
 
     override fun onNetworkUpdate(json: String) {
         Log.d(TAG, "interface update: $json")
+        TunnelRuntime.requestRefresh()
         val desired = TunSettings.fromUpdate(json) ?: return // link down: nothing to do
         control.post { applyTunSettings(desired) }
     }
@@ -245,12 +254,18 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
 
     // ---- status ----------------------------------------------------------------
 
+    /**
+     * Polls unetd's status once a second while the UI is visible and every
+     * 30 s otherwise (the notification only changes on state changes anyway).
+     * An interface update or the UI coming up wakes it early.
+     */
     private suspend fun pollStatus(name: String, dht: Boolean) {
         while (scope.isActive) {
             val json = Unetd.status()
             if (json != null) {
                 StatusParser.parse(json, name, dht, TunnelRuntime.status.value)?.let { status ->
                     TunnelRuntime.set(status)
+                    if (status.peers.any { it.connected }) lastPeerConnectedAt = System.currentTimeMillis()
                     val text = when (status.state) {
                         TunnelState.Connected -> "${status.onlinePeerCount} of ${status.peers.size} peers reachable"
                         else -> status.message ?: "Connecting…"
@@ -261,42 +276,67 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
                     }
                 }
             }
-            delay(1000)
+            val interval = if (TunnelRuntime.uiVisible.value) 1_000L else 30_000L
+            withTimeoutOrNull(interval) {
+                merge(TunnelRuntime.refresh, TunnelRuntime.uiVisible.drop(1).filter { it }.map { }).first()
+            }
         }
     }
 
     // ---- DHT (separate process) --------------------------------------------------
 
+    /**
+     * The DHT node runs only while it is needed: until the network data is
+     * here and a peer is connected, and again after the tunnel has had no
+     * connected peer for [DHT_IDLE_GRACE_MS]. While a peer is up it would only
+     * keep the radio busy: searches restart as soon as they finish, the
+     * routing table is maintained, and the announced port draws traffic.
+     */
     private fun scheduleDhtPing(cfg: TunnelConfig) {
-        val ping = object : Runnable {
+        val tick = object : Runnable {
             override fun run() {
                 if (!active) return
-                val pubkey = Unetd.publicKey(cfg.effectivePrivateKey()) ?: cfg.effectiveName()
-                startService(
-                    UdhtService.startIntent(
-                        this@UnetVpnService,
-                        unixSocket = unixSocket,
-                        idString = pubkey,
-                        nodeFile = File(filesDir, "dht-nodes.bin").absolutePath,
-                        authKeys = cfg.authKeys(),
-                        bootstrap = cfg.dhtBootstrap,
-                        debug = cfg.debug,
-                    ),
-                )
-                // Idempotent on the other side; this just revives the process if Android reclaimed it.
-                control.postDelayed(this, 30_000)
+                val status = TunnelRuntime.status.value
+                val peerUp = status.peers.any { it.connected }
+                val idleFor = System.currentTimeMillis() - lastPeerConnectedAt
+                val wanted = status.state != TunnelState.Connected || (!peerUp && idleFor > DHT_IDLE_GRACE_MS)
+                if (wanted) {
+                    val pubkey = Unetd.publicKey(cfg.effectivePrivateKey()) ?: cfg.effectiveName()
+                    // Idempotent on the other side; this also revives the process if Android reclaimed it.
+                    startService(
+                        UdhtService.startIntent(
+                            this@UnetVpnService,
+                            unixSocket = unixSocket,
+                            idString = pubkey,
+                            nodeFile = File(filesDir, "dht-nodes.bin").absolutePath,
+                            authKeys = cfg.authKeys(),
+                            bootstrap = cfg.dhtBootstrap,
+                            debug = cfg.debug,
+                        ),
+                    )
+                    if (!dhtRunning) AppLog.line("dht: node started (no connected peer)")
+                    dhtRunning = true
+                } else if (dhtRunning) {
+                    AppLog.line("dht: node stopped, a peer is connected; it restarts after ${DHT_IDLE_GRACE_MS / 1000} s without one")
+                    startService(UdhtService.stopIntent(this@UnetVpnService, "a peer is connected"))
+                    dhtRunning = false
+                }
+                control.postDelayed(this, 15_000)
             }
         }
-        dhtPing = ping
+        dhtPing = tick
+        dhtRunning = false
+        lastPeerConnectedAt = 0L
         DhtLog.clear(this) // a stale file from the last run would mislead the UI
         // Give unetd a moment to bind the control socket the DHT connects to.
-        control.postDelayed(ping, 2_000)
+        control.postDelayed(tick, 2_000)
     }
 
     private fun stopDht() {
         dhtPing?.let { control.removeCallbacks(it) }
         dhtPing = null
-        startService(UdhtService.stopIntent(this))
+        dhtRunning = false
+        startService(UdhtService.stopIntent(this, "tunnel closed"))
     }
 
     // ---- teardown ----------------------------------------------------------------
@@ -372,6 +412,8 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
 
     companion object {
         private const val TAG = "UnetVpnService"
+        /** How long the tunnel may be without a connected peer before the DHT node is started again. */
+        private const val DHT_IDLE_GRACE_MS = 60_000L
         private const val CHANNEL_ID = "unetd.tunnel"
         private const val NOTIFICATION_ID = 1
         private const val SESSION_NAME = "unetd"

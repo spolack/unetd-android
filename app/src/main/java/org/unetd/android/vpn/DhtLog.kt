@@ -13,6 +13,8 @@ import java.io.File
  * discovery stops.
  */
 object DhtLog {
+    const val STOPPED_MARKER = "--- unet-dht stopped: "
+
     fun file(context: Context): File = File(context.filesDir, "dht.log")
 
     fun read(context: Context): String = runCatching { file(context).readText() }.getOrDefault("")
@@ -35,6 +37,9 @@ object DhtLog {
     fun summary(text: String): String? {
         if (text.isBlank()) return null
         val lines = text.lines()
+        lines.lastOrNull { it.startsWith(STOPPED_MARKER) }?.let {
+            return "stopped, " + it.removePrefix(STOPPED_MARKER).trim()
+        }
         val found = lines.lastOrNull { it.startsWith("Node: ") }
         if (found != null) return "found a peer at ${found.removePrefix("Node: ").trim()}"
         for (line in lines.asReversed()) {
@@ -49,6 +54,7 @@ object DhtLog {
                 line.startsWith("Ping node ") -> return "pinging bootstrap node ${line.removePrefix("Ping node ").trim()}, no answer yet"
                 line.startsWith("Failed to connect to unetd") -> return "cannot reach unetd's control socket"
                 line.startsWith("DHT connected") -> return "connected to unetd, resolving bootstrap nodes"
+                line.startsWith("unet-dht started;") -> return "running (enable the verbose log in Setup for its trace)"
             }
         }
         return "running, no bootstrap contact yet"

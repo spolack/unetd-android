@@ -12,6 +12,9 @@ import org.unetd.android.config.ConfigStore
 import org.unetd.android.config.TunnelConfig
 import org.unetd.android.data.NetworkStatus
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import org.unetd.android.nativebridge.Unetd
 import org.unetd.android.vpn.DhtLog
@@ -27,10 +30,14 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
 
     // The DHT node lives in another process; its progress reaches us through a file.
     var dhtSummary by remember { mutableStateOf<String?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(status.capabilities.dht, status.state) {
-        while (true) {
-            dhtSummary = if (status.capabilities.dht) DhtLog.summary(DhtLog.read(context)) else null
-            delay(2000)
+        // Only while the activity is started: no file reads from the background.
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                dhtSummary = if (status.capabilities.dht) DhtLog.summary(DhtLog.read(context)) else null
+                delay(2000)
+            }
         }
     }
 

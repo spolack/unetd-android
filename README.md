@@ -356,6 +356,35 @@ on 127.0.0.1 forwards the emulator's packets to them from a second lo alias
 work: the packet passes conntrack twice and the reply is never mapped back.)
 PEX and WireGuard are left alone, they work from 127.0.0.1.
 
+## Battery
+
+What the app does while connected, and what it deliberately does not:
+
+- **Keepalive 25 s** by default (the WireGuard app's value; unetd's upstream
+  default is 10). Each keepalive wakes the radio, and 25 still beats the usual
+  UDP NAT timeouts: 30 s for a flow nobody has answered, 120 s and more once it
+  has replies. unetd derives its peer-down detection from the same number
+  (idle longer than twice the keepalive), so a dead peer is noticed later than
+  with 10. The router's network config should carry the same value.
+- **The DHT node runs only while it is needed**: until the network data is
+  here and a peer is connected, and again after a minute without a connected
+  peer. While a peer is up it would only keep the radio busy, since unet-dht
+  restarts its search as soon as one finishes, maintains its routing table,
+  and the announced port draws traffic from the whole DHT.
+- **Verbose logging is off by default.** unetd's trace, wireguard-go's log and
+  the DHT chatter cost CPU and storage all day; the Setup toggle brings them
+  back for diagnosis. What the Log screen shows without it: the build line,
+  protect() results, the tun line, the netdiag block, the DHT relay lines and
+  the DHT node's start/stop.
+- **Polling follows the screen**: unetd's status is read once a second while
+  the app is visible and every 30 s otherwise, with an interface update waking
+  the poll early; the UI's own refresh loops stop when the activity stops.
+
+Still on unetd's side and untouched: its peer-exchange timer re-arms every
+500 ms whether or not it has hosts to talk to, and STUN refreshes every
+15 minutes. To measure on a device: `adb shell dumpsys batterystats --charged
+org.unetd.android` after a day lists wakeups and radio time per app.
+
 ## Behind carrier-grade NAT
 
 When the gateway sits behind a CGNAT (DS-Lite is the common case), nothing

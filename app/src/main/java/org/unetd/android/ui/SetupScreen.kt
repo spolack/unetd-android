@@ -77,7 +77,7 @@ fun SetupScreen(
         privateKey = privateKey.trim(),
         authKey = authKey.trim(),
         gateways = gateways.lines().map { it.trim() }.filter { it.isNotEmpty() },
-        keepalive = keepalive.trim().toIntOrNull() ?: 10,
+        keepalive = keepalive.trim().toIntOrNull() ?: 25,
         dht = dht,
         dhtBootstrap = if (showAdvanced) dhtBootstrap.lines().map { it.trim() }.filter { it.isNotEmpty() } else emptyList(),
         debug = debug,
@@ -179,14 +179,14 @@ fun SetupScreen(
                 value = keepalive,
                 onValueChange = { keepalive = it.filter(Char::isDigit) },
                 label = { Text("Keepalive (seconds)") },
-                supportingText = { Text("Needed behind NAT. unetd only connects to peers when this is set; 10 is a good start.") },
+                supportingText = { Text("Needed behind NAT. unetd only connects to peers when this is set. 25 keeps NAT mappings alive and lets the radio sleep between; 10 reacts faster at a battery cost.") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
             )
 
             ToggleRow("Find peers through the DHT", "Runs unet-dht alongside; useful when gateways are behind NAT or move.", dht) { dht = it }
-            ToggleRow("Verbose unetd log", "Keep on while testing; the Log screen shows it.", debug) { debug = it }
+            ToggleRow("Verbose unetd log", "For diagnosis: unetd's trace, wireguard-go's log and the DHT node's chatter in the Log screen. Costs battery, so off for daily use.", debug) { debug = it }
 
             TextButton(onClick = { showAdvanced = !showAdvanced }) {
                 Text(if (showAdvanced) "Hide advanced" else "Advanced: raw unetd network JSON")

@@ -22,6 +22,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 
 /**
@@ -36,14 +39,17 @@ fun LogScreen(readLog: () -> String, onBack: () -> Unit) {
     val vertical = rememberScrollState()
     val context = LocalContext.current
 
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(Unit) {
-        while (true) {
-            val fresh = readLog()
-            if (fresh != text) {
-                text = fresh
-                vertical.scrollTo(vertical.maxValue)
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val fresh = readLog()
+                if (fresh != text) {
+                    text = fresh
+                    vertical.scrollTo(vertical.maxValue)
+                }
+                delay(1000)
             }
-            delay(1000)
         }
     }
 
