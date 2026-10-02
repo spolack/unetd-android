@@ -24,6 +24,7 @@ import org.unetd.android.nativebridge.Unetd
 class UdhtService : Service() {
 
     private var worker: Thread? = null
+    private var mirror: Thread? = null
     @Volatile private var stopping = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,6 +58,14 @@ class UdhtService : Service() {
             }
             stopSelf()
         }, "unet-dht").also { it.start() }
+        // Mirror this process's log ring to a file for the UI in the main process.
+        mirror = Thread({
+            while (worker?.isAlive == true) {
+                DhtLog.write(this, Unetd.logTail(400))
+                try { Thread.sleep(2_000) } catch (_: InterruptedException) { break }
+            }
+            DhtLog.write(this, Unetd.logTail(400))
+        }, "dht-log-mirror").also { it.isDaemon = true; it.start() }
         return START_NOT_STICKY
     }
 
@@ -64,6 +73,8 @@ class UdhtService : Service() {
         stopping = true
         Udht.requestStop()
         worker?.join(3_000)
+        mirror?.interrupt()
+        DhtLog.write(this, Unetd.logTail(400))
         super.onDestroy()
         // The DHT library keeps file-scope state; a fresh process next time is the
         // simplest way to be sure none of it carries over.

@@ -278,6 +278,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
             }
         }
         dhtPing = ping
+        DhtLog.clear(this) // a stale file from the last run would mislead the UI
         // Give unetd a moment to bind the control socket the DHT connects to.
         control.postDelayed(ping, 2_000)
     }

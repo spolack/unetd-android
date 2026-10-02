@@ -11,7 +11,10 @@ import androidx.compose.ui.platform.LocalContext
 import org.unetd.android.config.ConfigStore
 import org.unetd.android.config.TunnelConfig
 import org.unetd.android.data.NetworkStatus
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import org.unetd.android.nativebridge.Unetd
+import org.unetd.android.vpn.DhtLog
 
 private enum class Screen { Home, Setup, Log }
 
@@ -21,6 +24,15 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
     var config by remember { mutableStateOf(ConfigStore.load(context)) }
+
+    // The DHT node lives in another process; its progress reaches us through a file.
+    var dhtSummary by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(status.capabilities.dht, status.state) {
+        while (true) {
+            dhtSummary = if (status.capabilities.dht) DhtLog.summary(DhtLog.read(context)) else null
+            delay(2000)
+        }
+    }
 
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
@@ -32,6 +44,7 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
             onDisconnect = onDisconnect,
             onOpenSetup = { screen = Screen.Setup },
             onOpenLog = { screen = Screen.Log },
+            dhtSummary = dhtSummary,
         )
 
         Screen.Setup -> SetupScreen(
@@ -46,6 +59,13 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
             onBack = { screen = Screen.Home },
         )
 
-        Screen.Log -> LogScreen(readLog = { Unetd.logTail() }, onBack = { screen = Screen.Home })
+        Screen.Log -> LogScreen(
+            readLog = {
+                val dht = DhtLog.read(context)
+                if (dht.isBlank()) Unetd.logTail()
+                else Unetd.logTail() + "\n\n--- unet-dht (:dht process) ---\n" + dht
+            },
+            onBack = { screen = Screen.Home },
+        )
     }
 }

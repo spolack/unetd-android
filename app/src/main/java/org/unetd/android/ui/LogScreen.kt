@@ -26,8 +26,8 @@ import kotlinx.coroutines.delay
 
 /**
  * The native layer's recent output: unetd's diagnostics and debug trace, and
- * wireguard-go's log, in order. Refreshed every second. The DHT process logs
- * to logcat only (tag "unetd"), since it runs in another process.
+ * wireguard-go's log, in order, followed by the DHT process's log (mirrored to
+ * a file by UdhtService, see DhtLog). Refreshed every second.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

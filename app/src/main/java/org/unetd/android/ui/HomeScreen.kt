@@ -55,6 +55,7 @@ fun HomeScreen(
     configured: Boolean = true,
     onOpenSetup: () -> Unit = {},
     onOpenLog: () -> Unit = {},
+    dhtSummary: String? = null,
 ) {
     Scaffold(
         topBar = {
@@ -86,7 +87,7 @@ fun HomeScreen(
                 item { SetupPrompt(onOpenSetup) }
             }
             item { StatusCard(status, onConnect, onDisconnect, configured) }
-            item { CapabilityCard(status.capabilities) }
+            item { CapabilityCard(status.capabilities, dhtSummary) }
             item {
                 Text(
                     "Peers",
@@ -217,7 +218,7 @@ private fun StatusCard(
 }
 
 @Composable
-private fun CapabilityCard(caps: Capabilities) {
+private fun CapabilityCard(caps: Capabilities, dhtSummary: String?) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -233,6 +234,14 @@ private fun CapabilityCard(caps: Capabilities) {
                 Chip("PEX", caps.pex)
                 Chip("STUN", caps.stun)
                 Chip("DHT", caps.dht)
+            }
+            if (caps.dht) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "DHT node: " + (dhtSummary ?: "not started yet"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             if (!caps.rawSockets) {
                 Spacer(Modifier.height(12.dp))
