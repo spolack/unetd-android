@@ -20,17 +20,6 @@ import org.unetd.android.ui.UnetdTheme
 
 class MainActivity : ComponentActivity() {
 
-    override fun onStart() {
-        super.onStart()
-        org.unetd.android.vpn.TunnelRuntime.uiVisible.value = true
-        org.unetd.android.vpn.TunnelRuntime.requestRefresh()
-    }
-
-    override fun onStop() {
-        org.unetd.android.vpn.TunnelRuntime.uiVisible.value = false
-        super.onStop()
-    }
-
     private val repository by lazy { NativeUnetRepository(applicationContext) }
 
     /** The system's "allow this app to set up a VPN" dialog. */
@@ -51,6 +40,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        org.unetd.android.vpn.TunnelRuntime.observeProcessLifecycle()
 
         setContent {
             UnetdTheme {
