@@ -18,6 +18,7 @@
 
 #include "unetd.h"
 #include "unetd_core.h"
+#include "unetd_log.h"
 
 /* ---- what upstream main.c provided ------------------------------------- */
 
@@ -32,16 +33,31 @@ bool unetd_debug_active(void)
 	return debug;
 }
 
+/* unetd's D() trace goes straight into the log ring, no pipe in between. */
 void unetd_debug_printf(const char *format, ...)
 {
+	char buf[1024];
 	va_list ap;
 
 	if (!debug)
 		return;
 
 	va_start(ap, format);
-	vfprintf(stderr, format, ap);
+	vsnprintf(buf, sizeof(buf), format, ap);
 	va_end(ap);
+	unetd_log_push(buf);
+}
+
+/* Our own diagnostics, same destination. */
+static void __attribute__((format(printf, 1, 2))) core_log(const char *format, ...)
+{
+	char buf[1024];
+	va_list ap;
+
+	va_start(ap, format);
+	vsnprintf(buf, sizeof(buf), format, ap);
+	va_end(ap);
+	unetd_log_push(buf);
 }
 
 /* No hosts file: the app reads names and addresses from the status dump. */
@@ -127,7 +143,7 @@ static int do_network_add(const char *json)
 
 	blob_buf_init(&b, 0);
 	if (!blobmsg_add_json_from_string(&b, json)) {
-		fprintf(stderr, "unetd: network config is not valid JSON\n");
+		core_log("unetd: network config is not valid JSON");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -135,14 +151,14 @@ static int do_network_add(const char *json)
 	blobmsg_parse(&network_policy[NETWORK_ATTR_NAME], 1, &name,
 		      blobmsg_data(b.head), blobmsg_len(b.head));
 	if (!name) {
-		fprintf(stderr, "unetd: network config has no name\n");
+		core_log("unetd: network config has no name");
 		ret = -EINVAL;
 		goto out;
 	}
 
 	ret = unetd_network_add(blobmsg_get_string(name), b.head);
 	if (ret)
-		fprintf(stderr, "unetd: network_add(%s) failed\n", blobmsg_get_string(name));
+		core_log("unetd: network_add(%s) failed", blobmsg_get_string(name));
 out:
 	blob_buf_free(&b);
 	return ret;
@@ -290,8 +306,8 @@ static void *core_thread(void *arg)
 
 	core.pex_ok = global_pex_open(core.unix_socket) == 0;
 	if (!core.pex_ok)
-		fprintf(stderr, "unetd: failed to open global PEX port %d: %s\n",
-			global_pex_port, strerror(errno));
+		core_log("unetd: failed to open global PEX port %d: %s",
+			 global_pex_port, strerror(errno));
 
 	pthread_mutex_lock(&core.lock);
 	core.running = true;

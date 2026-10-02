@@ -47,7 +47,21 @@ object Unetd {
 
     fun startLogCapture() = nativeStartLogCapture()
     fun logTail(maxLines: Int = 400): String = nativeLogTail(maxLines) ?: ""
-    /** One line into the captured stderr, i.e. into the Log screen. */
+
+    /**
+     * The log lines since sequence number [since] (0: everything the ring still
+     * holds), at most [maxLines], and the sequence number to ask for next time.
+     */
+    fun logSince(since: Long, maxLines: Int = 500): Pair<Long, List<String>> {
+        val text = nativeLogSince(since, maxLines) ?: return since to emptyList()
+        val nl = text.indexOf('\n')
+        if (nl < 0) return since to emptyList()
+        val next = text.substring(0, nl).toLongOrNull() ?: since
+        val body = text.substring(nl + 1)
+        return next to if (body.isEmpty()) emptyList() else body.removeSuffix("\n").split('\n')
+    }
+
+    /** One line (or several, newline-separated) into the log ring, i.e. into the Log screen. */
     fun log(line: String) = nativeLog(line)
 
     /** A fresh Curve25519 key pair as (private, public), base64. */
@@ -67,6 +81,7 @@ object Unetd {
     private external fun nativeStatus(): String?
     private external fun nativeStartLogCapture()
     private external fun nativeLogTail(maxLines: Int): String?
+    private external fun nativeLogSince(since: Long, maxLines: Int): String?
     private external fun nativeLog(line: String)
     private external fun nativeGenerateKey(): Array<String>?
     private external fun nativePublicKey(privateKey: String): String?

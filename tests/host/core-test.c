@@ -54,6 +54,32 @@ static void fail(const char *what)
 	exit(1);
 }
 
+/* The delta API: a reader that remembers its sequence number sees each line once. */
+static void check_log_since(void)
+{
+	uint64_t next = 0, next2 = 0;
+	char *delta;
+
+	free(unetd_log_since(0, 10000, &next));	/* catch up */
+	if (next != unetd_log_seq())
+		fail("log_since did not catch up to log_seq");
+	unetd_log_push("core-test: delta one\ncore-test: delta two");
+	delta = unetd_log_since(next, 10000, &next2);
+	if (!delta || strcmp(delta, "core-test: delta one\ncore-test: delta two\n") != 0)
+		fail("log_since did not return exactly the two pushed lines");
+	free(delta);
+	if (next2 != next + 2)
+		fail("log_since advanced the sequence number wrongly");
+	delta = unetd_log_since(next, 1, &next2);
+	if (!delta || strcmp(delta, "core-test: delta one\n") != 0 || next2 != next + 1)
+		fail("log_since did not honour max_lines");
+	free(delta);
+	delta = unetd_log_since(next + 2, 10000, &next2);
+	if (!delta || *delta || next2 != next + 2)
+		fail("log_since returned lines past the end");
+	free(delta);
+}
+
 static char *wait_status(const char *needle, int tries)
 {
 	char *status = NULL;
@@ -200,6 +226,7 @@ int main(int argc, char **argv)
 	if (!tail || !*tail)
 		fail("log ring is empty");
 	free(tail);
+	check_log_since();
 
 	printf("PASS: core start/add/status/remove/stop twice in one process\n");
 	usleep(300 * 1000);	/* let the capture thread echo the line before exit */

@@ -67,11 +67,7 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
         )
 
         Screen.Log -> LogScreen(
-            readLog = {
-                val dht = DhtLog.read(context)
-                if (dht.isBlank()) Unetd.logTail()
-                else Unetd.logTail() + "\n\n--- unet-dht (:dht process) ---\n" + dht
-            },
+            readSince = { since, max -> Unetd.logSince(since, max) },
             onBack = { screen = Screen.Home },
         )
     }

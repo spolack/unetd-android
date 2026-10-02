@@ -7,6 +7,7 @@
  * thread, which is attached to the JVM once for its whole lifetime.
  */
 #include <jni.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,17 +60,21 @@ static void cb_protect_socket(void *priv, int fd)
 {
 	int attached;
 	JNIEnv *env = current_env(&attached);
+	jboolean ok;
+	char line[64];
 
 	if (!env || !callbacks)
 		return;
 	/* One line per socket, success included: on a phone with always-on and
 	 * lockdown, every byte depends on this having worked. */
-	fprintf(stderr, "unetd: VpnService.protect(%d) -> %s\n", fd,
-		(*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd) ? "ok" : "REFUSED");
+	ok = (*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd);
 	if ((*env)->ExceptionCheck(env)) {
 		(*env)->ExceptionClear(env);
-		fprintf(stderr, "unetd: VpnService.protect(%d) threw\n", fd);
+		ok = JNI_FALSE;
+		unetd_log_push("unetd: VpnService.protect() threw");
 	}
+	snprintf(line, sizeof(line), "unetd: VpnService.protect(%d) -> %s", fd, ok ? "ok" : "REFUSED");
+	unetd_log_push(line);
 	if (attached)
 		(*jvm)->DetachCurrentThread(jvm);
 }
@@ -206,11 +211,7 @@ Java_org_unetd_android_nativebridge_Unetd_nativeStatus(JNIEnv *env, jobject thiz
 	return ret;
 }
 
-/*
- * A line from Java into the captured stderr. Java cannot write to fd 2 itself:
- * Android's FileDescriptor.err is a dup made at process start, so it still
- * points at the original stderr after the capture has replaced fd 2.
- */
+/* A line (or several) from Kotlin straight into the log ring. */
 JNIEXPORT void JNICALL
 Java_org_unetd_android_nativebridge_Unetd_nativeLog(JNIEnv *env, jobject thiz, jstring line)
 {
@@ -218,8 +219,37 @@ Java_org_unetd_android_nativebridge_Unetd_nativeLog(JNIEnv *env, jobject thiz, j
 
 	if (!s)
 		return;
-	fprintf(stderr, "%s\n", s);
+	unetd_log_push(s);
 	(*env)->ReleaseStringUTFChars(env, line, s);
+}
+
+/*
+ * The lines since a sequence number: the first line of the result is the
+ * sequence number to ask for next time, the rest are the log lines.
+ */
+JNIEXPORT jstring JNICALL
+Java_org_unetd_android_nativebridge_Unetd_nativeLogSince(JNIEnv *env, jobject thiz, jlong since, jint max_lines)
+{
+	uint64_t next = 0;
+	char *lines = unetd_log_since(since > 0 ? (uint64_t)since : 0, max_lines > 0 ? (size_t)max_lines : 500, &next);
+	char head[32];
+	char *text;
+	jstring ret;
+
+	if (!lines)
+		return NULL;
+	snprintf(head, sizeof(head), "%llu\n", (unsigned long long)next);
+	text = malloc(strlen(head) + strlen(lines) + 1);
+	if (!text) {
+		free(lines);
+		return NULL;
+	}
+	strcpy(text, head);
+	strcat(text, lines);
+	free(lines);
+	ret = (*env)->NewStringUTF(env, text);
+	free(text);
+	return ret;
 }
 
 JNIEXPORT void JNICALL
