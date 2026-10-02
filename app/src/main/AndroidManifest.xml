@@ -34,8 +34,9 @@
         </activity>
 
         <!--
-          The VPN data plane. unetd runs as the control plane alongside it and
-          programs wireguard-go over its UAPI socket; see README.
+          The VPN data plane. unetd runs as the control plane alongside it, with
+          the DHT node on its loop, and programs wireguard-go over its UAPI
+          socket; see README.
         -->
         <service
             android:name=".vpn.UnetVpnService"
@@ -49,14 +50,5 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
-
-        <!--
-          unet-dht, in its own process: libubox's uloop is a process-wide
-          singleton and unetd owns the one in the main process.
-        -->
-        <service
-            android:name=".vpn.UdhtService"
-            android:exported="false"
-            android:process=":dht" />
     </application>
 </manifest>

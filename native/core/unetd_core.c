@@ -18,6 +18,7 @@
 #include <libubox/utils.h>
 
 #include "unetd.h"
+#include "udht.h"
 #include "unetd_core.h"
 #include "unetd_log.h"
 
@@ -71,15 +72,59 @@ void unetd_write_hosts(void)
 enum cmd_type {
 	CMD_NETWORK_ADD,
 	CMD_NETWORK_REMOVE,
+	CMD_DHT_START,
+	CMD_DHT_STOP,
 	CMD_STOP,
+};
+
+/* A deep copy of unetd_core_dht_config, owned by the command. */
+struct dht_args {
+	struct udht_config cfg;
+	char *strings[2 + 64 + 16];
+	const char *keys[64];
+	const char *bootstrap[16];
 };
 
 struct cmd {
 	enum cmd_type type;
 	char *arg;
+	struct dht_args *dht;
 	int ret;
 	bool done;
 };
+
+static void dht_args_free(struct dht_args *a)
+{
+	size_t i;
+
+	if (!a)
+		return;
+	for (i = 0; i < sizeof(a->strings) / sizeof(a->strings[0]); i++)
+		free(a->strings[i]);
+	free(a);
+}
+
+static struct dht_args *dht_args_copy(const struct unetd_core_dht_config *cfg)
+{
+	struct dht_args *a = calloc(1, sizeof(*a));
+	size_t n = 0;
+	int i;
+
+	if (!a)
+		return NULL;
+	a->cfg.id_string = a->strings[n++] = strdup(cfg->id_string);
+	if (cfg->node_file)
+		a->cfg.node_file = a->strings[n++] = strdup(cfg->node_file);
+	a->cfg.auth_keys = a->keys;
+	for (i = 0; i < cfg->n_auth_keys && i < 64; i++)
+		a->keys[a->cfg.n_auth_keys++] = a->strings[n++] = strdup(cfg->auth_keys[i]);
+	a->cfg.bootstrap = a->bootstrap;
+	for (i = 0; i < cfg->n_bootstrap && i < 16; i++)
+		a->bootstrap[a->cfg.n_bootstrap++] = a->strings[n++] = strdup(cfg->bootstrap[i]);
+	a->cfg.debug = cfg->debug;
+	a->cfg.keep_running = true;
+	return a;
+}
 
 #define CMD_TIMEOUT_MS		30000	/* add/remove: the loop may be in a DNS lookup */
 #define STOP_TIMEOUT_MS		10000
@@ -109,6 +154,7 @@ static struct {
 
 	char *status;			/* the latest snapshot, JSON */
 	struct uloop_timeout status_timer;
+	bool dht_running;		/* uloop thread only */
 
 	struct unetd_core_callbacks cb;
 	char *data_dir;
@@ -137,6 +183,9 @@ static char *do_status(void)
 	blob_buf_init(&b, 0);
 	blobmsg_add_u8(&b, "pex_socket", pex_socket() >= 0);
 	blobmsg_add_u32(&b, "pex_port", global_pex_port);
+	c = blobmsg_open_table(&b, "dht");
+	udht_status(&b);
+	blobmsg_close_table(&b, c);
 
 	c = blobmsg_open_table(&b, "networks");
 	avl_for_each_element(&networks, net, node) {
@@ -179,8 +228,8 @@ static void status_refresh(void)
 	core.status = json;
 	pthread_mutex_unlock(&core.lock);
 
-	/* Counters move while a network exists; nothing moves without one. */
-	if (!avl_is_empty(&networks))
+	/* Counters move while a network or the DHT node exists; nothing moves without. */
+	if (!avl_is_empty(&networks) || core.dht_running)
 		uloop_timeout_set(&core.status_timer, STATUS_INTERVAL_MS);
 }
 
@@ -293,6 +342,22 @@ static void cmd_fd_cb(struct uloop_fd *fd, unsigned int events)
 	case CMD_NETWORK_REMOVE:
 		cmd->ret = unetd_network_remove(cmd->arg);
 		break;
+	case CMD_DHT_START:
+		if (!core.unix_socket) {
+			cmd->ret = -ENOTSUP;
+			break;
+		}
+		cmd->dht->cfg.unix_path = core.unix_socket;
+		cmd->ret = udht_setup(&cmd->dht->cfg) < 0 ? -EIO : 0;
+		core.dht_running = cmd->ret == 0;
+		dht_args_free(cmd->dht);
+		cmd->dht = NULL;
+		break;
+	case CMD_DHT_STOP:
+		udht_stop();
+		core.dht_running = false;
+		cmd->ret = 0;
+		break;
 	case CMD_STOP:
 		cmd->ret = 0;
 		uloop_end();
@@ -329,7 +394,7 @@ static void deadline_in(struct timespec *ts, int ms)
  * On a timeout the command stays posted and is still executed when the loop
  * gets to it; until then every further command is refused with -EBUSY.
  */
-static int run_cmd(enum cmd_type type, const char *arg, int timeout_ms)
+static int run_cmd(enum cmd_type type, const char *arg, struct dht_args *dht, int timeout_ms)
 {
 	struct timespec deadline;
 	uint64_t one = 1;
@@ -347,7 +412,9 @@ static int run_cmd(enum cmd_type type, const char *arg, int timeout_ms)
 	}
 
 	free(core.pending.arg);
-	core.pending = (struct cmd){ .type = type, .arg = arg ? strdup(arg) : NULL };
+	dht_args_free(core.pending.dht);
+	core.pending = (struct cmd){ .type = type, .arg = arg ? strdup(arg) : NULL, .dht = dht };
+	dht = NULL;
 	core.cmd_posted = true;
 	if (write(core.efd, &one, sizeof(one)) != sizeof(one)) {
 		core.cmd_posted = false;
@@ -366,6 +433,7 @@ static int run_cmd(enum cmd_type type, const char *arg, int timeout_ms)
 out:
 	pthread_mutex_unlock(&core.lock);
 	pthread_mutex_unlock(&core.api_lock);
+	dht_args_free(dht);	/* not posted */
 	return ret;
 }
 
@@ -426,6 +494,8 @@ static void *core_thread(void *arg)
 
 		uloop_run();
 
+		udht_stop();
+		core.dht_running = false;
 		network_free_all();
 		status_refresh();	/* the empty snapshot, for a reader mid-stop */
 		uloop_timeout_cancel(&core.status_timer);
@@ -480,6 +550,8 @@ static void reap_thread(void)
 		unlink(core.unix_socket);
 	free(core.pending.arg);
 	core.pending.arg = NULL;
+	dht_args_free(core.pending.dht);
+	core.pending.dht = NULL;
 	free_config();
 }
 
@@ -556,7 +628,7 @@ int unetd_core_stop(void)
 	bool done;
 	int ret;
 
-	ret = run_cmd(CMD_STOP, NULL, STOP_TIMEOUT_MS);
+	ret = run_cmd(CMD_STOP, NULL, NULL, STOP_TIMEOUT_MS);
 	if (ret == -ETIMEDOUT)
 		core_log("unetd: stop timed out, the event loop is stuck; it will finish on its own");
 
@@ -596,14 +668,31 @@ int unetd_core_network_add(const char *json)
 {
 	if (!json)
 		return -EINVAL;
-	return run_cmd(CMD_NETWORK_ADD, json, CMD_TIMEOUT_MS);
+	return run_cmd(CMD_NETWORK_ADD, json, NULL, CMD_TIMEOUT_MS);
 }
 
 int unetd_core_network_remove(const char *name)
 {
 	if (!name)
 		return -EINVAL;
-	return run_cmd(CMD_NETWORK_REMOVE, name, CMD_TIMEOUT_MS);
+	return run_cmd(CMD_NETWORK_REMOVE, name, NULL, CMD_TIMEOUT_MS);
+}
+
+int unetd_core_dht_start(const struct unetd_core_dht_config *cfg)
+{
+	struct dht_args *a;
+
+	if (!cfg || !cfg->id_string)
+		return -EINVAL;
+	a = dht_args_copy(cfg);
+	if (!a)
+		return -ENOMEM;
+	return run_cmd(CMD_DHT_START, NULL, a, CMD_TIMEOUT_MS);
+}
+
+int unetd_core_dht_stop(void)
+{
+	return run_cmd(CMD_DHT_STOP, NULL, NULL, CMD_TIMEOUT_MS);
 }
 
 char *unetd_core_status_json(void)

@@ -38,20 +38,49 @@ data class Peer(
  *
  * Worth surfacing in the UI rather than hiding: on Android several of these
  * degrade for reasons the user cannot influence but should be able to see. An
- * unprivileged app can never hold CAP_NET_RAW, so unetd's raw-socket NAT punch
- * is replaced by sending from wireguard-go's own UDP socket.
+ * unprivileged app can never hold CAP_NET_RAW, so unetd cannot forge packets
+ * from the WireGuard port; see design-review.md, section 3, for what remains.
  */
 data class Capabilities(
     val pex: Boolean,
     val stun: Boolean,
     val dht: Boolean,
-    /** False on every unrooted device; the punch goes via the WireGuard socket instead. */
+    /** False on every unrooted device. */
     val rawSockets: Boolean,
-    /** What STUN learned: the NAT's outside port for the WireGuard port, null until a server answered. */
+    /**
+     * What STUN learned: the NAT's outside port for the WireGuard port, null
+     * until a server answered. Measured by taking the port over for the query
+     * while no peer is connected yet.
+     */
     val stunExternalPort: Int? = null,
-    /** Same for the peer-exchange port (the only one an app can probe, lacking raw sockets). */
+    /** Same for the peer-exchange port, which STUN can query at any time. */
     val stunAuthExternalPort: Int? = null,
 )
+
+/** The DHT node's progress, from unet-dht running on unetd's loop. */
+data class DhtState(
+    val running: Boolean,
+    /** Attached to unetd's control socket, i.e. able to send and receive. */
+    val connected: Boolean,
+    /** Enough good nodes to search; the searches then run. */
+    val ready: Boolean,
+    val goodNodes: Int,
+    val dubiousNodes: Int,
+    val incomingNodes: Int,
+    /** Peers announced for our networks that the node found so far. */
+    val nodesFound: Int,
+) {
+    /** One line for the home screen. */
+    val summary: String
+        get() = when {
+            !running -> "not running"
+            !connected -> "waiting for unetd's control socket"
+            nodesFound > 0 -> "found $nodesFound announced peer${if (nodesFound == 1) "" else "s"}"
+            ready -> "ready, searching for the network"
+            goodNodes + dubiousNodes > 0 -> "bootstrapping, $goodNodes good nodes so far"
+            else -> "bootstrapping, no node answered yet"
+        }
+}
 
 data class NetworkStatus(
     val name: String,
@@ -69,6 +98,8 @@ data class NetworkStatus(
     val localPublicKey: String? = null,
     /** How often a gateway refused our request for network data: our key is not in it. */
     val updateRefused: Int = 0,
+    /** The DHT node, when it has been started in this session. */
+    val dht: DhtState? = null,
 ) {
     val directPeerCount: Int get() = peers.count { it.link != PeerLink.Indirect }
     val onlinePeerCount: Int get() = peers.count { it.connected }

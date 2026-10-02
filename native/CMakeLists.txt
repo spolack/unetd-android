@@ -1,5 +1,6 @@
-# The native layer: libubox (subset) + json-c + unetd + unet-dht + the core
-# wrapper, in one shared library; plus libwg-go, cross-compiled by Go.
+# The native layer: libubox (subset) + json-c + unetd + unet-dht (as a library
+# on unetd's loop) + the core wrapper, in one shared library; plus libwg-go,
+# cross-compiled by Go.
 #
 # Two consumers:
 #   - AGP via externalNativeBuild (ANDROID is set by the NDK toolchain file):
@@ -57,6 +58,11 @@ target_include_directories(unet PUBLIC ${UNETD})
 target_compile_options(unet PRIVATE ${UNETD_COMMON_FLAGS})
 target_link_libraries(unet PUBLIC ubox)
 
+# unet-dht as a library (patch 0013): the core runs it on unetd's own uloop.
+add_library(udht STATIC ${UNETD}/dht.c ${UNETD}/udht.c)
+target_compile_options(udht PRIVATE ${UNETD_COMMON_FLAGS} -DUDHT_LIBRARY)
+target_link_libraries(udht PUBLIC unet)
+
 add_library(unetd-core STATIC
 	${UNETD}/network.c ${UNETD}/host.c ${UNETD}/service.c
 	${UNETD}/pex.c ${UNETD}/pex-stun.c ${UNETD}/wg.c ${UNETD}/wg-user.c
@@ -64,17 +70,13 @@ add_library(unetd-core STATIC
 )
 target_include_directories(unetd-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_compile_options(unetd-core PRIVATE ${UNETD_COMMON_FLAGS})
-target_link_libraries(unetd-core PUBLIC unet)
-
-add_library(udht STATIC ${UNETD}/dht.c ${UNETD}/udht.c)
-target_compile_options(udht PRIVATE ${UNETD_COMMON_FLAGS} -DUDHT_LIBRARY)
-target_link_libraries(udht PUBLIC unet)
+target_link_libraries(unetd-core PUBLIC unet udht)
 
 # ---- the Android library ---------------------------------------------------
 if(ANDROID)
-	add_library(unet-android SHARED jni/unetd_jni.c jni/udht_jni.c)
+	add_library(unet-android SHARED jni/unetd_jni.c)
 	target_compile_options(unet-android PRIVATE -Wall -fvisibility=hidden)
-	target_link_libraries(unet-android PRIVATE unetd-core udht log)
+	target_link_libraries(unet-android PRIVATE unetd-core log)
 	# Only the JNI entry points are exported.
 	target_link_options(unet-android PRIVATE -Wl,--exclude-libs,ALL)
 endif()

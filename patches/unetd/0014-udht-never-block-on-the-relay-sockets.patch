@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Fri, 2 Oct 2026 23:20:14 +0000
+Subject: [PATCH] udht: never block on the relay sockets
+
+Both ends of the relay between unet-dht and unetd were blocking UNIX datagram
+sockets: the client socket unet-dht sends on, and the socketpair end it hands
+to unetd over SCM_RIGHTS, which unetd keeps as pex_unix_tx_fd. unetd's
+pex_fd_cb() already treats EAGAIN as "drop this one", but never saw it, and a
+blocking sendmsg() on a full queue stalls the sender. With the DHT node
+running inside unetd's own process that stall would be a deadlock, since the
+same thread is the one that would drain the queue.
+
+Open the client socket non-blocking, set O_NONBLOCK on the end passed to
+unetd, and let dht_sendto() lose a packet quietly when the queue is full
+instead of treating it as a lost connection.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019FGFD5nZ9AL3AdMi7SfYSg
+---
+ udht.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/udht.c b/udht.c
+index a369005..cdb8a37 100644
+--- a/udht.c
++++ b/udht.c
+@@ -94,6 +94,8 @@ int dht_sendto(int sockfd, const void *buf, int len, int flags,
+ 
+ 	ret = sendmsg(sockfd, &msg, flags);
+ 	if (ret < 0) {
++		if (errno == EAGAIN || errno == ENOBUFS)
++			return ret;	/* queue full: this packet is lost, nothing else */
+ 		perror("send");
+ 		if (errno == ECONNRESET || errno == EDESTADDRREQ ||
+ 		    errno == ENOTCONN || errno == ECONNREFUSED)
+@@ -316,7 +318,13 @@ udht_open_socket(const char *unix_path)
+ 	int sfd[2];
+ 	int fd;
+ 
+-	fd = usock(USOCK_UNIX | USOCK_UDP, unix_path, NULL);
++	/*
++	 * Neither end of the relay may block: unetd's pex_fd_cb() handles
++	 * EAGAIN on its end, and a full queue must drop a DHT packet rather
++	 * than stall whoever sends it. With unetd and the DHT node in one
++	 * process a blocking send on a full queue would never be drained.
++	 */
++	fd = usock(USOCK_UNIX | USOCK_UDP | USOCK_NONBLOCK, unix_path, NULL);
+ 	if (fd < 0)
+ 		return -1;
+ 
+@@ -324,6 +332,7 @@ udht_open_socket(const char *unix_path)
+ 		close(fd);
+ 		return -1;
+ 	}
++	fcntl(sfd[0], F_SETFL, fcntl(sfd[0], F_GETFL) | O_NONBLOCK);
+ 
+ 	dht_unix_fd = fd;
+ 	dht_fd.fd = sfd[1];

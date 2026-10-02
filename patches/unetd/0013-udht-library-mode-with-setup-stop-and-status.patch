@@ -1,0 +1,415 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Fri, 2 Oct 2026 23:19:42 +0000
+Subject: [PATCH] udht: library mode with setup, stop and status
+
+Split the daemon's main() into udht_setup(), udht_stop() and udht_status(),
+so an embedder that already runs a uloop (unetd itself, when unetd and the
+DHT node live in one process, as an Android app needs) can run the node on
+that loop. main() is the same code behind getopt, compiled out with
+-DUDHT_LIBRARY. This replaces the udht_main() entry point from
+"udht: allow building as a library", whose argv interface an embedder had
+to fake.
+
+What the library mode changes beyond the split: losing unetd arms a
+reconnect timer instead of ending the loop, which is not the embedder's to
+end; udht_stop() frees everything a second setup would otherwise inherit
+(networks given with -N, the bootstrap list, the node file name, the status
+counters); the socket close is idempotent; a missing node file is no longer
+fopen(NULL). udht_status() reports connection and bootstrap progress for an
+embedder's UI.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ udht.c | 237 ++++++++++++++++++++++++++++++++++++++++++---------------
+ udht.h |  31 +++++++-
+ 2 files changed, 204 insertions(+), 64 deletions(-)
+
+diff --git a/udht.c b/udht.c
+index 5b7d801..a369005 100644
+--- a/udht.c
++++ b/udht.c
+@@ -9,6 +9,7 @@
+ #include <libubox/usock.h>
+ #include <libubox/uloop.h>
+ #include <libubox/blob.h>
++#include <libubox/blobmsg.h>
+ 
+ #include "curve25519.h"
+ #include "siphash.h"
+@@ -18,15 +19,20 @@
+ #include "pex-msg.h"
+ 
+ static struct uloop_timeout periodic_timer, peer_timer, status_timer, disconnect_timer;
+-static struct uloop_fd dht_fd;
+-static int dht_unix_fd;
++static struct uloop_timeout reconnect_timer;
++static struct uloop_fd dht_fd = { .fd = -1 };
++static int dht_unix_fd = -1;
+ static LIST_HEAD(bootstrap_peers);
+ static LIST_HEAD(networks);
+ static struct blob_buf b;
+ static uint8_t local_id[20];
+-static const char *node_file;
+-static const char *unix_path;
++static char *node_file;
++static char *unix_path;
+ static bool udht_connected;
++static bool udht_running;	/* between udht_setup() and udht_stop() */
++static bool udht_keep_running;	/* losing unetd: retry instead of ending the loop */
++static unsigned int nodes_found;
++static int prev_good, prev_dubious, prev_incoming;
+ 
+ static struct {
+ 	unsigned int tick;
+@@ -191,6 +197,7 @@ udht_cb(void *closure, int event, const unsigned char *info_hash,
+ 		for (i = 0; i < data_len / 6; i++) {
+ 			fprintf(stderr, "Node: %s:%d\n", inet_ntop(AF_INET, data, addrbuf, sizeof(addrbuf)), get_unaligned_be16(data + 4));
+ 			udht_send_v4_node(info_hash, data);
++			nodes_found++;
+ 			data += 6;
+ 		}
+ 	}
+@@ -277,9 +284,15 @@ udht_fd_cb(struct uloop_fd *fd, unsigned int events)
+ static void
+ udht_close_socket(void)
+ {
+-	uloop_fd_delete(&dht_fd);
+-	close(dht_fd.fd);
+-	close(dht_unix_fd);
++	if (dht_fd.fd >= 0) {
++		uloop_fd_delete(&dht_fd);
++		close(dht_fd.fd);
++		dht_fd.fd = -1;
++	}
++	if (dht_unix_fd >= 0) {
++		close(dht_unix_fd);
++		dht_unix_fd = -1;
++	}
+ }
+ 
+ static int
+@@ -489,7 +502,6 @@ static void
+ udht_status_check(struct uloop_timeout *t)
+ {
+ 	int good = 0, dubious = 0, incoming = 0;
+-	static int prev_good, prev_dubious, prev_incoming;
+ 
+ 	state.tick++;
+ 	uloop_timeout_set(t, 1000);
+@@ -525,6 +537,9 @@ udht_load_nodes(const char *filename)
+ 	FILE *f;
+ 	int rem;
+ 
++	if (!filename)
++		return;
++
+ 	f = fopen(filename, "r");
+ 	if (!f)
+ 		return;
+@@ -608,20 +623,6 @@ udht_save_nodes(const char *filename)
+ 	fclose(f);
+ }
+ 
+-static int usage(const char *progname)
+-{
+-	fprintf(stderr, "Usage: %s [<options>] -u <socket> <id string>\n"
+-		"Options:\n"
+-		"	-b <host>[:<port>]	Bootstrap from this DHT node instead of the\n"
+-		"				public routers (repeatable, default port 6881)\n"
+-		"	-d			Enable debug mode\n"
+-		"	-n <file>		Set node filename\n"
+-		"	-N <key>		Add network key\n"
+-		"	-u <socket>		Set unetd unix socket path\n"
+-		"\n",
+-		progname);
+-	return 1;
+-}
+ 
+ static void udht_disconnect(struct uloop_timeout *t)
+ {
+@@ -656,13 +657,31 @@ static void udht_disconnect(struct uloop_timeout *t)
+ 	udht_close_socket();
+ 
+ #ifndef UBUS_SUPPORT
++	/*
++	 * As a daemon, losing unetd ends the process and procd restarts it.
++	 * As a library the loop belongs to the embedder: retry the connection
++	 * instead (unetd's control socket comes back with it), unless the
++	 * embedder is stopping the node.
++	 */
++#ifdef UDHT_LIBRARY
++	if (udht_keep_running)
++		uloop_timeout_set(&reconnect_timer, 5000);
++#else
+ 	uloop_end();
+ #endif
++#endif
++}
++
++static void udht_reconnect_cb(struct uloop_timeout *t)
++{
++	if (udht_reconnect() < 0)
++		uloop_timeout_set(t, 5000);
+ }
+ 
+ int udht_reconnect(void)
+ {
+ 	udht_disconnect(&disconnect_timer);
++	uloop_timeout_cancel(&reconnect_timer);
+ 
+ 	if (udht_open_socket(unix_path) < 0)
+ 		return -1;
+@@ -683,37 +702,150 @@ int udht_reconnect(void)
+ 	return 0;
+ }
+ 
+-int udht_main(int argc, char **argv)
++void udht_stop(void)
++{
++	struct network_entry *n, *tmp;
++	int i;
++
++	udht_keep_running = false;
++	uloop_timeout_cancel(&reconnect_timer);
++	udht_disconnect(&disconnect_timer);
++
++	list_for_each_entry_safe(n, tmp, &networks, list) {
++		list_del(&n->list);
++		uloop_timeout_cancel(&n->search_timer);
++		free(n);
++	}
++	for (i = 0; i < n_bootstrap_args; i++)
++		free((char *)bootstrap_args[i]);
++	n_bootstrap_args = 0;
++	free(unix_path);
++	free(node_file);
++	unix_path = node_file = NULL;
++	blob_buf_free(&b);
++
++	memset(&state, 0, sizeof(state));
++	prev_good = prev_dubious = prev_incoming = 0;
++	nodes_found = 0;
++	dht_debug = NULL;
++	udht_running = false;
++}
++
++int udht_setup(const struct udht_config *cfg)
+ {
+-	const char *progname = argv[0];
+ 	uint8_t auth_key[CURVE25519_KEY_SIZE];
++	int i;
++
++	if (!cfg || !cfg->unix_path || !cfg->id_string)
++		return -1;
++
++	udht_stop();	/* a second setup replaces the first */
++
++	unix_path = strdup(cfg->unix_path);
++	node_file = cfg->node_file ? strdup(cfg->node_file) : NULL;
++	dht_debug = cfg->debug ? stderr : NULL;
++	udht_keep_running = cfg->keep_running;
++
++	for (i = 0; i < cfg->n_auth_keys; i++) {
++		if (b64_decode(cfg->auth_keys[i], auth_key, CURVE25519_KEY_SIZE) != CURVE25519_KEY_SIZE) {
++			fprintf(stderr, "Invalid network key\n");
++			udht_stop();
++			return -1;
++		}
++		udht_network_add(auth_key, -1);
++	}
++	for (i = 0; i < cfg->n_bootstrap && n_bootstrap_args < UDHT_MAX_BOOTSTRAP; i++)
++		bootstrap_args[n_bootstrap_args++] = strdup(cfg->bootstrap[i]);
++
++	udht_id_hash(local_id, cfg->id_string, strlen(cfg->id_string));
++
++	status_timer.cb = udht_status_check;
++	periodic_timer.cb = udht_timer_cb;
++	peer_timer.cb = udht_peer_timer_cb;
++	disconnect_timer.cb = udht_disconnect;
++	reconnect_timer.cb = udht_reconnect_cb;
++	udht_running = true;
++
++#ifdef UBUS_SUPPORT
++	udht_ubus_init();
++#else
++	if (udht_reconnect() < 0) {
++		if (!udht_keep_running) {
++			fprintf(stderr, "Failed to connect to unetd\n");
++			udht_stop();
++			return -1;
++		}
++		fprintf(stderr, "Failed to connect to unetd, retrying\n");
++		uloop_timeout_set(&reconnect_timer, 5000);
++	}
++#endif
++
++	return 0;
++}
++
++void udht_status(struct blob_buf *buf)
++{
++	int good = 0, dubious = 0, incoming = 0;
++
++	blobmsg_add_u8(buf, "running", udht_running);
++	blobmsg_add_u8(buf, "connected", udht_connected);
++	blobmsg_add_u8(buf, "ready", state.dht_ready);
++	if (udht_connected)
++		dht_nodes(AF_INET, &good, &dubious, NULL, &incoming);
++	blobmsg_add_u32(buf, "good", good);
++	blobmsg_add_u32(buf, "dubious", dubious);
++	blobmsg_add_u32(buf, "incoming", incoming);
++	blobmsg_add_u32(buf, "nodes_found", nodes_found);
++}
++
++#ifndef UDHT_LIBRARY
++#define MAX_KEYS 64
++
++static int usage(const char *progname)
++{
++	fprintf(stderr, "Usage: %s [<options>] -u <socket> <id string>\n"
++		"Options:\n"
++		"	-b <host>[:<port>]	Bootstrap from this DHT node instead of the\n"
++		"				public routers (repeatable, default port 6881)\n"
++		"	-d			Enable debug mode\n"
++		"	-n <file>		Set node filename\n"
++		"	-N <key>		Add network key\n"
++		"	-u <socket>		Set unetd unix socket path\n"
++		"\n",
++		progname);
++	return 1;
++}
++
++
++int main(int argc, char **argv)
++{
++	const char *progname = argv[0];
++	const char *keys[MAX_KEYS];
++	const char *bootstrap[UDHT_MAX_BOOTSTRAP];
++	struct udht_config cfg = {
++		.auth_keys = keys,
++		.bootstrap = bootstrap,
++	};
+ 	int ch;
+ 
+-	/* An embedder may call this again after it returned: start getopt over. */
+-	optind = 1;
+-	n_bootstrap_args = 0;
+ 	while ((ch = getopt(argc, argv, "b:dN:n:u:")) != -1) {
+ 		switch (ch) {
+ 		case 'b':
+-			if (n_bootstrap_args < UDHT_MAX_BOOTSTRAP)
+-				bootstrap_args[n_bootstrap_args++] = optarg;
++			if (cfg.n_bootstrap < UDHT_MAX_BOOTSTRAP)
++				bootstrap[cfg.n_bootstrap++] = optarg;
+ 			break;
+ 		case 'N':
+-			if (b64_decode(optarg, auth_key, CURVE25519_KEY_SIZE) != CURVE25519_KEY_SIZE) {
+-				fprintf(stderr, "Invalid network key\n");
+-				return 1;
+-			}
+-
+-			udht_network_add(auth_key, -1);
++			if (cfg.n_auth_keys < MAX_KEYS)
++				keys[cfg.n_auth_keys++] = optarg;
+ 			break;
+ 		case 'n':
+-			node_file = optarg;
++			cfg.node_file = optarg;
+ 			break;
+ 		case 'd':
+-			dht_debug = stderr;
++			cfg.debug = true;
+ 			break;
+ 		case 'u':
+-			unix_path = optarg;
++			cfg.unix_path = optarg;
+ 			break;
+ 		default:
+ 			return usage(progname);
+@@ -723,38 +855,17 @@ int udht_main(int argc, char **argv)
+ 	argv += optind;
+ 	argc -= optind;
+ 
+-	if (argc != 1 || !unix_path)
++	if (argc != 1 || !cfg.unix_path)
+ 		return usage(progname);
++	cfg.id_string = argv[0];
+ 
+-	udht_id_hash(local_id, argv[0], strlen(argv[0]));
+-
+-	status_timer.cb = udht_status_check;
+-	periodic_timer.cb = udht_timer_cb;
+-	peer_timer.cb = udht_peer_timer_cb;
+-	disconnect_timer.cb = udht_disconnect;
+ 	uloop_init();
+-
+-#ifdef UBUS_SUPPORT
+-	udht_ubus_init();
+-#else
+-	if (udht_reconnect() < 0) {
+-		fprintf(stderr, "Failed to connect to unetd\n");
++	if (udht_setup(&cfg) < 0)
+ 		return 1;
+-	}
+-#endif
+-
+ 	uloop_run();
+ 	uloop_done();
+-
+-	udht_disconnect(&disconnect_timer);
+-	blob_buf_free(&b);
++	udht_stop();
+ 
+ 	return 0;
+ }
+-
+-#ifndef UDHT_LIBRARY
+-int main(int argc, char **argv)
+-{
+-	return udht_main(argc, argv);
+-}
+ #endif
+diff --git a/udht.h b/udht.h
+index 529fdf3..7fd28a9 100644
+--- a/udht.h
++++ b/udht.h
+@@ -1,7 +1,36 @@
+ #ifndef __UDHT_H
+ #define __UDHT_H
+ 
+-int udht_main(int argc, char **argv);
++#include <stdbool.h>
++#include <stdint.h>
++
++struct blob_buf;
++
++/*
++ * The DHT node as a library: an embedder that already runs a uloop (unetd
++ * itself, built with -DUDHT_LIBRARY) sets it up on that loop and stops it
++ * again; the unet-dht daemon is the same code behind main().
++ */
++struct udht_config {
++	const char *unix_path;		/* unetd's control socket */
++	const char *node_file;		/* node cache, or NULL */
++	const char *id_string;		/* seeds the node id */
++	const char *const *auth_keys;	/* networks to search for, base64 public keys */
++	int n_auth_keys;
++	const char *const *bootstrap;	/* host[:port] instead of the public routers */
++	int n_bootstrap;
++	bool debug;
++	/* On losing unetd: keep retrying instead of ending the uloop. */
++	bool keep_running;
++};
++
++/* Registers on the running uloop and connects to unetd. 0 on success. */
++int udht_setup(const struct udht_config *cfg);
++/* Disconnects, saves the node cache, frees everything; safe to call twice. */
++void udht_stop(void);
++/* running, connected, ready, good/dubious/incoming nodes, nodes_found. */
++void udht_status(struct blob_buf *buf);
++
+ int udht_reconnect(void);
+ void udht_network_add(const uint8_t *auth_key, int seq);
+ void udht_network_flush(int seq);

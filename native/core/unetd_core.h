@@ -72,9 +72,27 @@ int unetd_core_network_add(const char *json);
 int unetd_core_network_remove(const char *name);
 
 /*
+ * The DHT node (unet-dht) on the same loop. It owns no socket: it relays
+ * through the global PEX socket over the control socket given at start
+ * (unix_socket), so start() must have been given one. Restartable.
+ */
+struct unetd_core_dht_config {
+	const char *id_string;		/* seeds the node id, e.g. the public key */
+	const char *node_file;		/* node cache, or NULL */
+	const char *const *auth_keys;	/* networks to search for, base64 */
+	int n_auth_keys;
+	const char *const *bootstrap;	/* host[:port]; none: the public routers */
+	int n_bootstrap;
+	bool debug;
+};
+int unetd_core_dht_start(const struct unetd_core_dht_config *cfg);
+int unetd_core_dht_stop(void);
+
+/*
  * The latest status snapshot of every network as JSON (malloc'd, caller
  * frees), or NULL when not running. Refreshed by the uloop thread once a
- * second while a network exists and at every event; never blocks.
+ * second while a network or the DHT node exists and at every event; never
+ * blocks. Carries a "dht" object with the node's progress.
  */
 char *unetd_core_status_json(void);
 

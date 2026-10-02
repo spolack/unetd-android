@@ -64,7 +64,22 @@ object Unetd {
     fun networkAdd(json: String): Int = nativeNetworkAdd(json)
     fun networkRemove(name: String): Int = nativeNetworkRemove(name)
 
-    /** The latest status snapshot of every network, or null when unetd is not running. Never blocks. */
+    /**
+     * Starts the DHT node (unet-dht) on unetd's own loop. It owns no socket: it
+     * relays through unetd's global PEX socket over the control socket given to
+     * [start]. [authKeys] are the networks' public keys; [idString] seeds the node
+     * id; [bootstrap] (`host[:port]`) replaces the public bootstrap routers when
+     * non-empty. Idempotent: a second start replaces the first. 0 on success.
+     */
+    fun dhtStart(idString: String, nodeFile: String?, authKeys: List<String>, bootstrap: List<String>, debug: Boolean): Int =
+        nativeDhtStart(idString, nodeFile, authKeys.toTypedArray(), bootstrap.toTypedArray(), debug)
+
+    fun dhtStop(): Int = nativeDhtStop()
+
+    /**
+     * The latest status snapshot of every network, with a "dht" object for the
+     * node's progress, or null when unetd is not running. Never blocks.
+     */
     fun status(): String? = nativeStatus()
 
     fun startLogCapture() = nativeStartLogCapture()
@@ -100,6 +115,10 @@ object Unetd {
     private external fun nativeRunning(): Boolean
     private external fun nativeNetworkAdd(json: String): Int
     private external fun nativeNetworkRemove(name: String): Int
+    private external fun nativeDhtStart(
+        idString: String, nodeFile: String?, authKeys: Array<String>, bootstrap: Array<String>, debug: Boolean,
+    ): Int
+    private external fun nativeDhtStop(): Int
     private external fun nativeStatus(): String?
     private external fun nativeStartLogCapture()
     private external fun nativeLogTail(maxLines: Int): String?

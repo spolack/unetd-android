@@ -11,13 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 import org.unetd.android.config.ConfigStore
 import org.unetd.android.config.TunnelConfig
 import org.unetd.android.data.NetworkStatus
-import androidx.compose.runtime.LaunchedEffect
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.delay
 import org.unetd.android.nativebridge.Unetd
-import org.unetd.android.vpn.DhtLog
 
 private enum class Screen { Home, Setup, Log }
 
@@ -27,19 +21,6 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.Home) }
     var config by remember { mutableStateOf(ConfigStore.load(context)) }
-
-    // The DHT node lives in another process; its progress reaches us through a file.
-    var dhtSummary by remember { mutableStateOf<String?>(null) }
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(status.capabilities.dht, status.state) {
-        // Only while the activity is started: no file reads from the background.
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                dhtSummary = if (status.capabilities.dht) DhtLog.summary(DhtLog.read(context)) else null
-                delay(2000)
-            }
-        }
-    }
 
     BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
@@ -51,7 +32,6 @@ fun AppRoot(status: NetworkStatus, onConnect: () -> Unit, onDisconnect: () -> Un
             onDisconnect = onDisconnect,
             onOpenSetup = { screen = Screen.Setup },
             onOpenLog = { screen = Screen.Log },
-            dhtSummary = dhtSummary,
         )
 
         Screen.Setup -> SetupScreen(

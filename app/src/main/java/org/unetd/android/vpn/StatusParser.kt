@@ -3,6 +3,7 @@ package org.unetd.android.vpn
 import org.json.JSONObject
 import org.unetd.android.config.Ip
 import org.unetd.android.data.Capabilities
+import org.unetd.android.data.DhtState
 import org.unetd.android.data.NetworkStatus
 import org.unetd.android.data.Peer
 import org.unetd.android.data.PeerLink
@@ -17,12 +18,24 @@ object StatusParser {
     fun parse(json: String, networkName: String, dhtEnabled: Boolean, previous: NetworkStatus): NetworkStatus? {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return null
         val pexSocket = root.optBoolean("pex_socket", false)
+        val dht = root.optJSONObject("dht")?.let { d ->
+            DhtState(
+                running = d.optBoolean("running", false),
+                connected = d.optBoolean("connected", false),
+                ready = d.optBoolean("ready", false),
+                goodNodes = d.optInt("good", 0),
+                dubiousNodes = d.optInt("dubious", 0),
+                incomingNodes = d.optInt("incoming", 0),
+                nodesFound = d.optInt("nodes_found", 0),
+            )
+        }?.takeIf { it.running || previous.dht != null }
         val net = root.optJSONObject("networks")?.optJSONObject(networkName)
             ?: return previous.copy(
                 name = networkName,
                 state = TunnelState.Connecting,
                 message = "unetd has no network \"$networkName\"",
                 capabilities = previous.capabilities.copy(pex = pexSocket),
+                dht = dht,
             )
 
         val localAddress = net.optString("local_address", "")
@@ -84,6 +97,7 @@ object StatusParser {
             },
             localPublicKey = net.optString("local_pubkey", "").ifEmpty { null },
             updateRefused = updateRefused,
+            dht = dht,
         )
     }
 }

@@ -11,7 +11,10 @@
  * file-scope state have to survive a full cycle.
  *
  * Usage: core-test <data-dir> <socket-dir> <network-json>
- * Environment: CORE_TEST_UNIX_SOCKET (control socket path), CORE_TEST_HOLD (seconds)
+ * Environment: CORE_TEST_UNIX_SOCKET (control socket path), CORE_TEST_HOLD (seconds),
+ * CORE_TEST_DHT_BOOTSTRAP=host:port and CORE_TEST_DHT_KEY=<auth key> to also run
+ * the DHT node on the loop in both rounds (M1b): it must get a pong from that
+ * node within the hold time, and the status must show it running.
  * A wireguard-go instance must already be serving <socket-dir>/<name>.sock.
  */
 #include <errno.h>
@@ -113,6 +116,68 @@ static char *wait_status(const char *needle, int tries)
 	return NULL;
 }
 
+/* Waits until the log ring contains needle (from sequence number since). */
+static bool wait_log(const char *needle, uint64_t since, int tries)
+{
+	while (tries-- > 0) {
+		uint64_t next;
+		char *lines = unetd_log_since(since, 100000, &next);
+		bool found = lines && strstr(lines, needle);
+
+		free(lines);
+		if (found)
+			return true;
+		usleep(200 * 1000);
+	}
+	return false;
+}
+
+/*
+ * The DHT node on the loop (M1b): started after the network, it must attach to
+ * the control socket, ping the bootstrap node and get its pong back through
+ * the relay, and the status snapshot must show it. Then it is stopped, and
+ * the next round starts it again, since the app does the same.
+ */
+static void dht_round(int round)
+{
+	const char *bootstrap = getenv("CORE_TEST_DHT_BOOTSTRAP");
+	const char *key = getenv("CORE_TEST_DHT_KEY");
+	const char *keys[] = { key };
+	const char *boots[] = { bootstrap };
+	struct unetd_core_dht_config cfg = {
+		.id_string = "core-test",
+		.auth_keys = keys,
+		.n_auth_keys = 1,
+		.bootstrap = boots,
+		.n_bootstrap = 1,
+		.debug = true,
+	};
+	uint64_t since = unetd_log_seq();
+	char *status;
+
+	if (!bootstrap || !key)
+		return;
+
+	if (unetd_core_dht_start(&cfg))
+		fail("dht_start");
+	if (!wait_log("DHT connected", since, 25))
+		fail("the DHT node did not attach to the control socket");
+	if (!wait_log("Pong!", since, 75))
+		fail("no pong within 15 s: the relay did not carry the ping or the reply");
+	status = wait_status("\"dht\":{\"running\":true,\"connected\":true", 25);
+	if (!status)
+		fail("the status snapshot does not show the DHT node");
+	free(status);
+	printf("round %d: the DHT node got its pong through the relay\n", round);
+
+	if (unetd_core_dht_stop())
+		fail("dht_stop");
+	status = wait_status("\"dht\":{\"running\":false", 25);
+	if (!status)
+		fail("the status snapshot still shows the DHT node after stop");
+	free(status);
+}
+
 static void one_cycle(const struct unetd_core_config *cfg,
 		      const struct unetd_core_callbacks *cb, const char *json, int round)
 {
@@ -205,8 +270,9 @@ static void one_cycle(const struct unetd_core_config *cfg,
 		fail("status unavailable");
 	free(key);
 
-	/* CORE_TEST_HOLD=<seconds>: stay up in round 1 so another process (unet-dht)
-	 * can connect to the control socket and use the relay. */
+	dht_round(round);
+
+	/* CORE_TEST_HOLD=<seconds>: stay up in round 1 for whoever wants to look. */
 	if (round == 1 && getenv("CORE_TEST_HOLD")) {
 		printf("round %d: holding for %s s\n", round, getenv("CORE_TEST_HOLD"));
 		fflush(stdout);
@@ -215,8 +281,14 @@ static void one_cycle(const struct unetd_core_config *cfg,
 
 	if (unetd_core_network_remove("no-such-network") == 0)
 		fail("removing an unknown network succeeded");
-	if (unetd_core_network_remove(getenv("NET_NAME") ? getenv("NET_NAME") : "wgm1"))
-		fail("network_remove");
+	{
+		int rc = unetd_core_network_remove(getenv("NET_NAME") ? getenv("NET_NAME") : "wgm1");
+
+		if (rc) {
+			fprintf(stderr, "network_remove returned %d\n", rc);
+			fail("network_remove");
+		}
+	}
 
 	pthread_mutex_lock(&lock);
 	if (!last_update || !strstr(last_update, "\"link-up\":false"))

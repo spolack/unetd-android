@@ -55,7 +55,6 @@ fun HomeScreen(
     configured: Boolean = true,
     onOpenSetup: () -> Unit = {},
     onOpenLog: () -> Unit = {},
-    dhtSummary: String? = null,
 ) {
     Scaffold(
         topBar = {
@@ -87,7 +86,7 @@ fun HomeScreen(
                 item { SetupPrompt(onOpenSetup) }
             }
             item { StatusCard(status, onConnect, onDisconnect, configured) }
-            item { CapabilityCard(status.capabilities, dhtSummary) }
+            item { CapabilityCard(status.capabilities, status.dht?.summary) }
             item {
                 Text(
                     "Peers",
@@ -258,8 +257,10 @@ private fun CapabilityCard(caps: Capabilities, dhtSummary: String?) {
             if (!caps.rawSockets) {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Raw sockets unavailable on Android, so NAT hole punching is sent " +
-                        "from WireGuard's own socket instead. This is expected, not a fault.",
+                    "Raw sockets are unavailable to an app, so unetd cannot forge packets " +
+                        "from the WireGuard port: it measures that port's NAT mapping by " +
+                        "taking the port over briefly before any peer connects, and WireGuard's " +
+                        "own handshakes do the hole punching. Expected, not a fault.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

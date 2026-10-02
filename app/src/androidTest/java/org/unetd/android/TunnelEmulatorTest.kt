@@ -41,7 +41,7 @@ import java.net.URL
  *   routerAddress  the router's in-tunnel IPv4 address, serving HTTP on :8080
  *   probeUrl       an internet URL that answers 204 (default: Google's connectivity check)
  *   useDht         "true": configure no gateway at all; the app must find the
- *                  router through the DHT (its own unet-dht in the :dht process)
+ *                  router through the DHT (its own unet-dht on unetd's loop)
  *   dhtBootstrap   comma-separated host:port list of DHT nodes for that mode
  *
  * The VPN consent dialog cannot be clicked here; CI pre-grants it with
@@ -131,10 +131,12 @@ class TunnelEmulatorTest {
     }
 
     /**
-     * The network data carries two public STUN servers. Once connected, unetd
-     * must query them and learn an outside port. On Android that is the
-     * peer-exchange port's mapping (no raw sockets), and unetd postpones the
-     * query for 60 s while a peer is already connected, hence the long wait.
+     * The network data carries a STUN server on the runner. Once connected,
+     * unetd must query it and learn an outside port. Without raw sockets the
+     * WireGuard port's mapping is measured by taking that port over while no
+     * peer is connected yet; later cycles can only query from the
+     * peer-exchange port, and unetd postpones a query for 60 s while a peer is
+     * already connected, hence the long wait.
      */
     @Test
     fun t3b_stunLearnsExternalPort() {
@@ -150,11 +152,12 @@ class TunnelEmulatorTest {
         waitFor("the status to carry the STUN result", 10_000) {
             TunnelRuntime.status.value.capabilities.let { it.stunExternalPort != null || it.stunAuthExternalPort != null }
         }
-        // Without a raw socket unetd can only learn the auth port, never the
-        // WireGuard data port; it must stop after the first query instead of
-        // re-querying forever (the STUN storm, ~20/s). Let a few seconds pass,
-        // then check the recent log is not dominated by STUN queries: during a
-        // storm the ring is almost all of them, after the fix a tiny fraction.
+        // Without a raw socket a query from the peer-exchange port learns only
+        // the auth port and cannot continue to the data port; unetd must idle
+        // then instead of re-querying forever (the STUN storm, ~20/s). Let a few
+        // seconds pass, then check the recent log is not dominated by STUN
+        // queries: during a storm the ring is almost all of them, after the fix
+        // a tiny fraction.
         Thread.sleep(8_000)
         val recent = Unetd.logTail(400).lines()
         val stunSends = recent.count { it.contains("Send STUN query") }

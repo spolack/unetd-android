@@ -235,6 +235,74 @@ Java_org_unetd_android_nativebridge_Unetd_nativeNetworkRemove(JNIEnv *env, jobje
 	return ret;
 }
 
+/* Copies a String[] into a NULL-terminated char*[]; free with free_strings(). */
+static char **dup_jstrings(JNIEnv *env, jobjectArray arr, int *count)
+{
+	int n = arr ? (*env)->GetArrayLength(env, arr) : 0;
+	char **out = calloc(n + 1, sizeof(*out));
+	int i;
+
+	*count = 0;
+	if (!out)
+		return NULL;
+	for (i = 0; i < n; i++) {
+		jstring js = (*env)->GetObjectArrayElement(env, arr, i);
+
+		out[i] = dup_jstring(env, js);
+		if (js)
+			(*env)->DeleteLocalRef(env, js);
+		if (!out[i])
+			out[i] = strdup("");
+	}
+	*count = n;
+	return out;
+}
+
+static void free_strings(char **v)
+{
+	char **p;
+
+	if (!v)
+		return;
+	for (p = v; *p; p++)
+		free(*p);
+	free(v);
+}
+
+JNIEXPORT jint JNICALL
+Java_org_unetd_android_nativebridge_Unetd_nativeDhtStart(JNIEnv *env, jobject thiz,
+	jstring id_string, jstring node_file, jobjectArray auth_keys, jobjectArray bootstrap,
+	jboolean debug)
+{
+	char *id = dup_jstring(env, id_string);
+	char *nf = dup_jstring(env, node_file);
+	int nkeys, nboot;
+	char **keys = dup_jstrings(env, auth_keys, &nkeys);
+	char **boot = dup_jstrings(env, bootstrap, &nboot);
+	struct unetd_core_dht_config cfg = {
+		.id_string = id,
+		.node_file = nf,
+		.auth_keys = (const char *const *)keys,
+		.n_auth_keys = nkeys,
+		.bootstrap = (const char *const *)boot,
+		.n_bootstrap = nboot,
+		.debug = debug,
+	};
+	int ret = (id && keys && boot) ? unetd_core_dht_start(&cfg) : -ENOMEM;
+
+	free(id);
+	free(nf);
+	free_strings(keys);
+	free_strings(boot);
+	return ret;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_unetd_android_nativebridge_Unetd_nativeDhtStop(JNIEnv *env, jobject thiz)
+{
+	return unetd_core_dht_stop();
+}
+
 JNIEXPORT jstring JNICALL
 Java_org_unetd_android_nativebridge_Unetd_nativeStatus(JNIEnv *env, jobject thiz)
 {
