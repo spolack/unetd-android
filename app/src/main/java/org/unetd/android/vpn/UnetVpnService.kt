@@ -124,7 +124,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         val name = cfg.effectiveName()
         statusJob = scope.launch { pollStatus(name, cfg.dht) }
         if (cfg.dht) scheduleDhtPing(cfg)
-        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) }
+        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) { protect(it) } }
         Log.i(TAG, "tunnel up: wireguard-go ${WgGo.wgVersion()}, network $name")
     }
 
@@ -240,7 +240,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
             return
         }
         currentTun = desired
-        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) }
+        scope.launch { delay(3_000); NetDiag.run(this@UnetVpnService) { protect(it) } }
     }
 
     // ---- status ----------------------------------------------------------------

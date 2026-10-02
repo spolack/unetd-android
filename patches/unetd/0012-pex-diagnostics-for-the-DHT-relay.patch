@@ -19,11 +19,11 @@ and has no debug flag, hence plain stderr with a hard cap.
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
 ---
- pex-msg.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 50 insertions(+), 1 deletion(-)
+ pex-msg.c | 57 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 56 insertions(+), 1 deletion(-)
 
 diff --git a/pex-msg.c b/pex-msg.c
-index de088db..5fc4f6f 100644
+index de088db..6d0443f 100644
 --- a/pex-msg.c
 +++ b/pex-msg.c
 @@ -103,6 +103,35 @@ pex_fd_sockaddr(const void *addr, socklen_t *len)
@@ -62,22 +62,33 @@ index de088db..5fc4f6f 100644
  struct pex_msg_update_recv_ctx {
  	struct list_head list;
  
-@@ -241,8 +270,14 @@ pex_fd_cb(struct uloop_fd *fd, unsigned int events)
+@@ -239,6 +268,17 @@ pex_fd_cb(struct uloop_fd *fd, unsigned int events)
+ 			slen = sizeof(*sin);
+ 		}
  
- retry:
- 		if (pex_unix_tx_fd >= 0) {
-+			static int forwarded;
++		{
++			static int logged;
 +			char abuf[64];
 +
++			if (logged < 3 && ++logged)
++				fprintf(stderr, "pex: rx %d bytes from %s, %s (first %d logged)\n",
++					(int)len, pex_addr_str(&sin6, abuf, sizeof(abuf)),
++					pex_unix_tx_fd >= 0 ? "forwarded to the DHT node" : "no DHT node attached",
++					3);
++		}
++
+ retry:
+ 		if (pex_unix_tx_fd >= 0) {
  			iov[0].iov_len = slen;
- 			iov[1].iov_len = len;
-+			if (forwarded < 3 && ++forwarded)
-+				fprintf(stderr, "pex: rx %d bytes from %s, forwarded to the DHT node (first %d logged)\n",
-+					(int)len, pex_addr_str(&sin6, abuf, sizeof(abuf)), 3);
- 			if (sendmsg(pex_unix_tx_fd, &msg, 0) < 0) {
- 				switch (errno) {
- 				case EINTR:
-@@ -347,7 +382,21 @@ pex_unix_cb(struct uloop_fd *fd, unsigned int events)
+@@ -312,6 +352,7 @@ pex_unix_cb(struct uloop_fd *fd, unsigned int events)
+ 				close(pex_unix_tx_fd);
+ 
+ 			pex_unix_tx_fd = *pfd;
++			fprintf(stderr, "pex: DHT node attached, replies go to fd %d\n", *pfd);
+ 		}
+ 
+ 		if (!len)
+@@ -347,7 +388,21 @@ pex_unix_cb(struct uloop_fd *fd, unsigned int events)
  		sa = pex_fd_sockaddr(sa, &sa_len);
  		if (!sa)
  			continue;

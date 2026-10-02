@@ -235,7 +235,7 @@ upstream on its own.
 | `0009` pex: report dropped global messages and failed sends | A host that never gets its network data could not be debugged: unknown-network drops and `sendto()` errors were silent. The emulator run was diagnosed with exactly these lines. |
 | `0010` pex: IPv4 fallback for the global PEX socket | The socket is `AF_INET6` dual-stack and cannot be created on a kernel with `ipv6.disable=1`; unetd then ran with no peer exchange at all. Open an IPv4 socket on the same port instead. |
 | `0011` udht: `-b` bootstrap option | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. |
-| `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; in debug mode the first few relayed and forwarded packets are logged. Added to find out why a phone's DHT pings got no answer. |
+| `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; the first few relayed packets, the first few received ones (forwarded to the DHT node or not) and the moment the DHT node attaches are logged. Added to find out why a phone's DHT pings got no answer. |
 
 And for wireguard-go (`patches/wireguard-go/`):
 
@@ -319,8 +319,12 @@ The `-b` bootstrap option (patch 0011) and the "DHT bootstrap nodes" field under
 
 On a phone, the Log screen is the equivalent of this job's logcat: it carries
 the build, the always-on and lockdown state, every `protect()` result, the
-`tun:` line, the netdiag block, the first DHT packets relayed and forwarded,
-and the DHT process's own log.
+`tun:` line, the netdiag block (routes, DNS, HTTPS, raw TCP, and UDP probes: a
+DNS query to 8.8.8.8 and a DHT ping to the three public bootstrap routers, each
+from a plain socket and from a `protect()`ed one), the first DHT packets relayed
+and received, and the DHT process's own log. The host-tests workflow also pings
+the public bootstrap routers with unet-dht from the runner, informationally, so
+a phone's missing pong can be compared with a plain host.
 
 One emulator detail cost a run: QEMU's user-mode NAT delivers the guest's
 packets to the host from **127.0.0.1**, and a DHT node drops anything from

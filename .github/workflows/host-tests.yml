@@ -98,6 +98,13 @@ jobs:
             /tmp/unetd-nat-testbed/dht/*.log
           if-no-files-found: ignore
 
+      # Informational: the real public DHT, from the runner. Tells whether
+      # the bootstrap routers answer unet-dht's ping at all today, which a
+      # phone's log alone cannot (carriers filter UDP/6881 at times).
+      - name: Public DHT - do the bootstrap routers answer unet-dht?
+        continue-on-error: true
+        run: ./tests/host/public-dht.sh "$PWD/build/host" 45
+
       - name: M0 - same, with CAP_NET_RAW dropped
         # Proves the raw-socket degradation patch: an unprivileged Android app
         # can never get CAP_NET_RAW, so unetd must still configure WireGuard
