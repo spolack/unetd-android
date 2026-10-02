@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Fri, 2 Oct 2026 00:20:08 +0000
+Subject: [PATCH] pex: diagnostics for the DHT relay
+
+unet-dht owns no UDP socket: its packets reach the network through unetd's
+global PEX socket over the control socket, and replies go back the same
+way. That relay was silent. A sendto() that failed was invisible, and so
+was whether a reply had been forwarded to the DHT node at all, which made a
+phone whose DHT pings never got an answer impossible to diagnose from its
+log.
+
+Report a failed relay sendto() with the destination and errno (the first
+five), and log the first few relayed and forwarded packets with their
+addresses, so the trace shows the packet leaving and the reply arriving
+without flooding the log once the DHT is busy. pex-msg.c is part of libunet
+and has no debug flag, hence plain stderr with a hard cap.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
+---
+ pex-msg.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index de088db..5fc4f6f 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -103,6 +103,35 @@ pex_fd_sockaddr(const void *addr, socklen_t *len)
+ 	return NULL;
+ }
+ 
++/* "a.b.c.d:port" or "[v6]:port" for diagnostics; IPv4 mapped into IPv6 unmapped */
++static const char *
++pex_addr_str(const void *addr, char *buf, size_t len)
++{
++	const struct sockaddr *sa = addr;
++	char ip[INET6_ADDRSTRLEN];
++
++	if (sa->sa_family == AF_INET) {
++		const struct sockaddr_in *sin = addr;
++
++		inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
++		snprintf(buf, len, "%s:%d", ip, ntohs(sin->sin_port));
++	} else if (sa->sa_family == AF_INET6) {
++		const struct sockaddr_in6 *sin6 = addr;
++
++		if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
++			inet_ntop(AF_INET, &sin6->sin6_addr.s6_addr[12], ip, sizeof(ip));
++			snprintf(buf, len, "%s:%d", ip, ntohs(sin6->sin6_port));
++		} else {
++			inet_ntop(AF_INET6, &sin6->sin6_addr, ip, sizeof(ip));
++			snprintf(buf, len, "[%s]:%d", ip, ntohs(sin6->sin6_port));
++		}
++	} else {
++		snprintf(buf, len, "(af %d)", sa->sa_family);
++	}
++
++	return buf;
++}
++
+ struct pex_msg_update_recv_ctx {
+ 	struct list_head list;
+ 
+@@ -241,8 +270,14 @@ pex_fd_cb(struct uloop_fd *fd, unsigned int events)
+ 
+ retry:
+ 		if (pex_unix_tx_fd >= 0) {
++			static int forwarded;
++			char abuf[64];
++
+ 			iov[0].iov_len = slen;
+ 			iov[1].iov_len = len;
++			if (forwarded < 3 && ++forwarded)
++				fprintf(stderr, "pex: rx %d bytes from %s, forwarded to the DHT node (first %d logged)\n",
++					(int)len, pex_addr_str(&sin6, abuf, sizeof(abuf)), 3);
+ 			if (sendmsg(pex_unix_tx_fd, &msg, 0) < 0) {
+ 				switch (errno) {
+ 				case EINTR:
+@@ -347,7 +382,21 @@ pex_unix_cb(struct uloop_fd *fd, unsigned int events)
+ 		sa = pex_fd_sockaddr(sa, &sa_len);
+ 		if (!sa)
+ 			continue;
+-		sendto(pex_fd.fd, buf + slen, len - slen, 0, sa, sa_len);
++		if (sendto(pex_fd.fd, buf + slen, len - slen, 0, sa, sa_len) < 0) {
++			static int failed;
++			char abuf[64];
++
++			if (failed < 5 && ++failed)
++				fprintf(stderr, "pex: DHT relay to %s failed: %s\n",
++					pex_addr_str(sa, abuf, sizeof(abuf)), strerror(errno));
++		} else {
++			static int relayed;
++			char abuf[64];
++
++			if (relayed < 3 && ++relayed)
++				fprintf(stderr, "pex: DHT relay: %d bytes to %s (first %d logged)\n",
++					(int)(len - slen), pex_addr_str(sa, abuf, sizeof(abuf)), 3);
++		}
+ 	}
+ }
+ 

@@ -11,6 +11,7 @@
 
 #include <android/log.h>
 #include <jni.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,8 +62,10 @@ void wg_protect_fd(int fd)
 		(*env)->ExceptionClear(env);
 		ok = JNI_FALSE;
 	}
-	if (!ok)
+	if (!ok) {
 		__android_log_print(ANDROID_LOG_ERROR, "libwg-go", "protect(%d) failed", fd);
+		fprintf(stderr, "wg: VpnService.protect(%d) refused\n", fd);
+	}
 
 	if (attached)
 		(*jvm)->DetachCurrentThread(jvm);

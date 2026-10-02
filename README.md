@@ -235,6 +235,7 @@ upstream on its own.
 | `0009` pex: report dropped global messages and failed sends | A host that never gets its network data could not be debugged: unknown-network drops and `sendto()` errors were silent. The emulator run was diagnosed with exactly these lines. |
 | `0010` pex: IPv4 fallback for the global PEX socket | The socket is `AF_INET6` dual-stack and cannot be created on a kernel with `ipv6.disable=1`; unetd then ran with no peer exchange at all. Open an IPv4 socket on the same port instead. |
 | `0011` udht: `-b` bootstrap option | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. |
+| `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; in debug mode the first few relayed and forwarded packets are logged. Added to find out why a phone's DHT pings got no answer. |
 
 And for wireguard-go (`patches/wireguard-go/`):
 

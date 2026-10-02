@@ -108,7 +108,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         Unetd.startLogCapture()
         // First line of every connection in the Log screen: which build this is.
         Log.i(TAG, "unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) starting; wireguard-go ${WgGo.wgVersion()}")
-        System.err.println("unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) connecting")
+        AppLog.line("unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) connecting")
         TunnelRuntime.set(TunnelRuntime.empty.copy(name = cfg.effectiveName(), state = TunnelState.Connecting))
 
         val tun = ConfigStore.loadLastTun(this) ?: TunSettings.placeholder()
@@ -185,7 +185,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
                 val (addr, prefix) = r.split('/')
                 builder.addRoute(addr, prefix.toInt())
             }
-            System.err.println("tun: addresses=${tun.addresses} routes=${tun.routes} (split tunnel, both families allowed)")
+            AppLog.line("tun: addresses=${tun.addresses} routes=${tun.routes} (split tunnel, both families allowed)")
             builder.establish()
         } catch (e: Exception) {
             Log.e(TAG, "establish() failed for $tun", e)
@@ -195,7 +195,14 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
 
     // ---- unetd callbacks (uloop thread) -----------------------------------------
 
-    override fun protectSocket(fd: Int): Boolean = protect(fd)
+    override fun protectSocket(fd: Int): Boolean {
+        // Every socket that must bypass the tunnel (unetd's global PEX socket,
+        // wireguard-go's UDP sockets) comes through here. A false here means the
+        // socket's traffic goes into the tunnel or, with lockdown on, nowhere.
+        val ok = protect(fd)
+        AppLog.line("protect(fd=$fd) -> $ok")
+        return ok
+    }
 
     override fun onNetworkUpdate(json: String) {
         Log.d(TAG, "interface update: $json")
@@ -308,7 +315,7 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         // must not wait on unetd, whose event loop can sit in a blocking DNS
         // lookup for a gateway (seconds to minutes when the network is unusable).
         teardownWg()
-        System.err.println("tunnel closed, stopping unetd")
+        AppLog.line("tunnel closed, stopping unetd")
         Unetd.stop()
         WgGo.wgSetProtector(null)
         currentTun = null

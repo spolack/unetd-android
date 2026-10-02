@@ -7,6 +7,7 @@
  * thread, which is attached to the JVM once for its whole lifetime.
  */
 #include <jni.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,9 +62,12 @@ static void cb_protect_socket(void *priv, int fd)
 
 	if (!env || !callbacks)
 		return;
-	(*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd);
-	if ((*env)->ExceptionCheck(env))
+	if (!(*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd))
+		fprintf(stderr, "unetd: VpnService.protect(%d) refused\n", fd);
+	if ((*env)->ExceptionCheck(env)) {
 		(*env)->ExceptionClear(env);
+		fprintf(stderr, "unetd: VpnService.protect(%d) threw\n", fd);
+	}
 	if (attached)
 		(*jvm)->DetachCurrentThread(jvm);
 }

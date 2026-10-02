@@ -69,7 +69,7 @@ object NetDiag {
         } catch (e: Exception) {
             out.append("  tcp 34.107.221.82:80 FAILED after ${System.currentTimeMillis() - t2} ms: $e\n")
         }
-        System.err.print(out)
+        AppLog.line(out.toString().trimEnd())
     }
 
     private fun describe(cm: ConnectivityManager, n: android.net.Network?): String {
