@@ -79,9 +79,10 @@ PASS: unetd drove wireguard-go over UAPI with no ubus, no VXLAN and no kernel ba
 ### Using it
 
 You need a unetd network managed from an OpenWrt router (or any host running
-`unetd` with `unet-cli`), and that router — or any member of the network —
-reachable from the internet on UDP 51819, unetd's global PEX port. If it is
-behind NAT, forward that port.
+`unetd` with `unet-cli`). The router does not need a public address: with DHT
+discovery on both sides, a phone on mobile data behind carrier NAT found a
+router behind another NAT and both opened their mappings themselves. The
+router-side requirements for that are in step 3.
 
 1. **Setup → Generate key.** The screen shows this device's public key.
 2. **On the router**, add the device to the network with that key, then sign
@@ -92,10 +93,29 @@ behind NAT, forward that port.
    ```
    (Give it `gateway=<some host>` if the phone should reach the rest of the
    network through one host rather than directly.)
-3. **Back in the app**, enter the network's public key (`auth_key`, the one
-   unetd is configured with on the router) and one or more gateways as
-   `host` or `host:port`. Save.
-4. **Connect.** Android asks once for VPN permission, and on Android 17 and
+3. **On the router, make the DHT announce the network.** Install `unet-dht`
+   (its own package on OpenWrt) and give it the network's public key on its
+   command line. `option dht '1'` on the interface is not enough: unetd has
+   no attribute for that key, drops it, and unet-dht, which asks unetd over
+   ubus which networks to announce, gets an empty list. The two bootstrap
+   routers built into unet-dht are also both dead at the time of writing,
+   so point one of them at a live one; check the address first with
+   `nslookup dht.transmissionbt.com`.
+   ```
+   sed -i 's#-n /var/run/unetd/nodes.dat#-n /var/run/unetd/nodes.dat -N <auth_key>#' /etc/init.d/unet-dht
+   echo "87.98.162.88 router.bittorrent.com" >> /etc/hosts
+   /etc/init.d/unet-dht restart
+   ```
+   To watch it: `unet-dht -d -u /var/run/unetd/socket -n /var/run/unetd/nodes.dat -N <auth_key> x`
+   should log `Pong!`, `DHT is ready`, `Start search for network`,
+   `Sending announce_peer` and, once the phone is up, `Node: <its address>`.
+   Both lines are undone by a package upgrade; a unetd with the `dht`
+   attribute and the five-router unet-dht of patch 0011 make them unnecessary.
+4. **Back in the app**, enter the network's public key (`auth_key`, the one
+   unetd is configured with on the router). Gateways (`host` or `host:port`)
+   are optional with DHT on; with a gateway the data arrives in seconds, with
+   DHT alone in one to three minutes. Save.
+5. **Connect.** Android asks once for VPN permission, and on Android 17 and
    newer also for *local network* access: since API 37 every packet to a
    LAN address is refused (`EPERM`) until that permission is granted, and a
    gateway on your LAN, or the emulator's host, is such an address. unetd fetches the signed
@@ -355,6 +375,13 @@ two of them:
 - Patience: discovery, announcement and the other side's search add up to a
   minute or two.
 
+This was verified on 2 October 2026 with a phone on 5G behind carrier NAT and
+an OpenWrt router behind a netfilter NAT with port-restricted filtering:
+neither side had a forwarded port, the router's unet-dht (given its network
+with `-N`, see "Using it") found the phone's announcement, unetd sent to it,
+the phone's requests then passed, and WireGuard came up on the phone's
+preserved port 51830 with pings both ways.
+
 A symmetric NAT on either side defeats this, STUN included. The way out is an
 IPv6 endpoint for the gateway, which DS-Lite provides natively and which
 unetd's dual-stack peer-exchange socket uses as it is, or a relay host with a
@@ -407,8 +434,12 @@ The DHT node in the app's own `:dht` process is verified on the emulator too:
 the second emulator pass configures no gateway, and the app finds the router
 through a private DHT on the runner (see "The emulator test").
 
-Not verified anywhere yet: STUN, the public BitTorrent DHT (both the testbed
-and the emulator use a private one), Doze
+Verified on a real network on 2 October 2026: DHT discovery against the
+public BitTorrent DHT and the full tunnel between a phone on 5G and an OpenWrt
+router, both behind NAT, no forwarded ports (see "Behind carrier-grade NAT").
+STUN is verified on the emulator (an outside port learned from a public server).
+
+Not verified anywhere yet: Doze
 and roaming on a phone, and GrapheneOS specifics. The app has run on one physical
 device so far, where the VPN came up but the device's own VPN settings
 (always-on) were still being investigated.
