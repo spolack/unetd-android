@@ -4,11 +4,13 @@ An Android VPN client that embeds [unetd](https://github.com/openwrt/unetd)
 natively and acts as the system VPN provider, interoperating with existing
 unetd networks.
 
-**Status:** complete enough to test against a real network. The app embeds
-unetd, unet-dht and wireguard-go as native libraries, joins a network as a
-"dynamic" host, and routes the network's prefix through a `VpnService`. The
-native layer is verified on Linux and in CI; **nothing has run on a device
-yet** — see the end of this file for exactly what that means.
+**Status:** works end to end. The app embeds unetd, unet-dht and wireguard-go
+as native libraries, joins a network as a "dynamic" host, and routes the
+network's prefix through a `VpnService`. The native layer is verified on Linux
+and in CI, the whole tunnel on an emulator in CI and on a phone behind carrier
+NAT — see the end of this file for exactly what that means. `design-review.md`
+is a critical pass over the architecture and the reasons behind the current
+shape.
 
 ---
 
@@ -25,17 +27,20 @@ and without reimplementing anything.
 
 ```
  Android app process
- ┌──────────────────────────────────────────────┐
- │ UnetVpnService ── Builder.establish() ─┐      │
- │                                        │ tun fd
- │ libwg-go (wireguard-go)  ◀─────────────┘      │
- │   ├── UAPI socket  <cache>/wireguard/X.sock   │
- │   └── UDP socket ──▶ the internet             │
- │            ▲                                  │
- │            │ set=1 / get=1                    │
- │ libunetd.so (uloop on a native thread)        │
- │   └── JNI facade ◀──▶ Kotlin                  │
- └──────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────┐
+ │ UnetVpnService ── Builder.establish() ─┐            │
+ │        │ host                          │ tun fd     │
+ │ TunnelController (state machine)       │            │
+ │        │                               ▼            │
+ │ libwg-go.so (wireguard-go)                          │
+ │   ├── UAPI socket  <files>/run/wireguard/X.sock     │
+ │   └── UDP socket ──▶ the internet                   │
+ │            ▲                                        │
+ │            │ set=1 / get=1                          │
+ │ libunet-android.so: unetd + unet-dht on one uloop,  │
+ │   on a native thread; status snapshot and events    │
+ │   └── JNI facade ◀──▶ Kotlin                        │
+ └────────────────────────────────────────────────────┘
 ```
 
 The hinge is one directory. unetd looks for its UAPI socket at
@@ -129,22 +134,29 @@ the first place to look when something does not connect.
 
 ### What is where
 
-- `UnetVpnService` is the data plane *and* the host of the control plane. It
-  establishes the tun, hands it to wireguard-go (`libwg-go.so`), starts unetd on
-  its own thread (`libunet-android.so`) pointed at the same UAPI socket
-  directory, and adds the network. unetd's interface update — the same payload
-  the `update-cmd` script gets on a router — comes back as a callback and
-  decides whether the tun has to be re-established.
-- `UdhtService` runs unet-dht in the app's `:dht` process. It has to be a
-  separate process because libubox's uloop is a process-wide singleton that
-  unetd already occupies; upstream ships unet-dht as its own daemon for the same
-  reason. It has no socket of its own and relays through unetd's global PEX
-  socket over a unix socket in the app's data dir, so it needs no `protect()`.
-- `nativebridge/` holds the three JNI objects: `Unetd` (the library wrapper in
-  `native/core`), `WgGo` (wireguard-go), `Udht`.
-- The UI talks to a `UnetRepository`; `NativeUnetRepository` reads the service's
-  `TunnelRuntime` state flow and starts/stops the service. `FakeUnetRepository`
-  still drives the Compose previews.
+- `TunnelController` owns the tunnel: a process-wide state machine on its own
+  thread that establishes the tun through the service, hands it to
+  wireguard-go (`libwg-go.so`), starts unetd on its own thread
+  (`libunet-android.so`) pointed at the same UAPI socket directory, and adds
+  the network. unetd's interface update — the same payload the `update-cmd`
+  script gets on a router — comes back as a callback and decides whether the
+  tun has to be re-established (new tun first, then the data plane is swapped).
+  unetd's events (peer up/down, network reload, STUN result) refresh the UI
+  state from a status snapshot; only the counters are polled, and only while
+  the UI is visible.
+- `UnetVpnService` is the Android host of one connection: the VPN interface,
+  `protect()`, the foreground notification. It can be destroyed and recreated
+  by the system; the controller notices and stops or refuses accordingly.
+- unet-dht runs **on unetd's uloop** (patch 0013), started and stopped by the
+  controller while no peer is connected. It has no socket of its own and
+  relays through unetd's global PEX socket over a unix socket in the app's
+  data dir, so it needs no `protect()`; both relay sockets are non-blocking
+  (patch 0014), since one thread cannot wait on itself.
+- `nativebridge/` holds the two JNI objects: `Unetd` (the library wrapper in
+  `native/core`, DHT included) and `WgGo` (wireguard-go).
+- The UI talks to a `UnetRepository`; `NativeUnetRepository` reads the
+  `TunnelRuntime` state flow and starts/stops the service. The Compose
+  previews use `SampleData`.
 
 ### Routing policy, now real
 
@@ -204,7 +216,7 @@ variables (`UNETD_KEYSTORE_FILE` is the path to the `.jks`). Install the
 on `main` is an update of the previous one.
 
 The Gradle build runs CMake with the NDK on `native/CMakeLists.txt`, which
-builds libubox (subset) + json-c + unetd + unet-dht + the wrapper into
+builds libubox (subset) + json-c + unetd + unet-dht (library mode) + the wrapper into
 `libunet-android.so` and cross-compiles `libwg-go.so` with Go, using the NDK's
 clang as the C compiler, for arm64-v8a, armeabi-v7a and x86_64. wireguard-go is
 a Go module dependency (`native/libwg-go/go.mod`, pinned to an upstream commit
@@ -214,17 +226,17 @@ on PATH (or `GO_EXECUTABLE=/path/to/go`), the NDK is installed by AGP on demand.
 ## Layout
 
 ```
-app/                        Compose app, VpnService, DHT service, JNI bridges
+app/                        Compose app, TunnelController, VpnService, JNI bridges
 native/CMakeLists.txt       the native build, for the NDK and for the host
-native/core/                unetd as a library: uloop thread, command channel, status, log ring
-native/jni/                 JNI bindings for unetd and unet-dht
+native/core/                unetd (+ unet-dht) as a library: uloop thread, commands, status snapshot, events, log ring
+native/jni/                 JNI binding for the library
 native/libwg-go/            wireguard-go embedding: bind wrapper, UAPI listener, JNI glue (Go, c-shared)
-patches/unetd/              ordered, individually upstreamable patch series (12)
+patches/unetd/              ordered, individually upstreamable patch series (14)
 third_party/unetd           submodule, pinned to 7c3213d (upstream HEAD)
 third_party/libubox         submodule (upstream HEAD)
 third_party/json-c          submodule, json-c-0.19-20260627
 scripts/                    apply-patches.sh, build-host.sh, build-libwg-go.sh
-tests/host/                 M0 (UAPI hinge) and M1a (library wrapper) harnesses
+tests/host/                 M0 (UAPI hinge), M1a (library wrapper), M1b (DHT on the loop) harnesses
 ```
 
 ## CI
@@ -249,13 +261,15 @@ needs from it goes through public interfaces (see below).
 | `0003` network: tolerate a missing ifindex | `if_nametoindex()` failure aborted setup, but only VXLAN consumes `ifindex`. A `VpnService` tun may have no resolvable netdev name. |
 | `0004` pex: make raw sockets optional | The big one — see below. |
 | `0005` wg-user: runtime UAPI socket directory | The path is only known at runtime on Android, and `/data/data/<pkg>` is wrong for secondary users and work profiles. Also fixes an unchecked `snprintf()` truncation against the 108-byte `sun_path` limit. |
-| `0006` platform: hooks for socket protection and interface updates | `protect_socket()` for the sockets that must bypass the tunnel the process itself provides; `network_update()` as an in-process replacement for `update-cmd`, since fork+exec is unavailable to an app on Android 10+. Both optional; nothing changes when unset. |
+| `0006` platform: hooks for socket protection, interface updates and events | `protect_socket()` for the sockets that must bypass the tunnel the process itself provides (a refusal closes the socket and fails the operation, so nothing sends into its own tunnel); `network_update()` as an in-process replacement for `update-cmd`, since fork+exec is unavailable to an app on Android 10+; `event()` for peer up/down, network reload and STUN results, so the app needs no polling. All optional; nothing changes when unset. |
 | `0007` network: expose the status dump without ubus | `__network_dump()` was static in `ubus.c`, so a build without ubus had no way to report peers, endpoints or counters at all. |
-| `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`, so an app can run the DHT node from its own entry point. getopt's `optind` is reset on entry, since the app calls it again whenever unetd went away and came back; without that the second call only printed the usage. |
+| `0008` udht: allow building as a library | `main()` becomes `udht_main()` with a wrapper compiled out by `-DUDHT_LIBRARY`. Superseded by 0013, kept in the series as the step it was. |
 | `0009` pex: report dropped global messages and failed sends | A host that never gets its network data could not be debugged: unknown-network drops and `sendto()` errors were silent. The emulator run was diagnosed with exactly these lines. |
 | `0010` pex: IPv4 fallback for the global PEX socket | The socket is `AF_INET6` dual-stack and cannot be created on a kernel with `ipv6.disable=1`; unetd then ran with no peer exchange at all. Open an IPv4 socket on the same port instead. |
 | `0011` udht: `-b` bootstrap option, five default routers | The only bootstrap nodes were two hard-coded public routers, so unet-dht could not be tested offline or used in a private DHT. Those two (router.bittorrent.com, router.utorrent.com) also both stopped answering at some point in 2026, from a CI host as much as from a phone, which left every unet-dht unable to bootstrap; the default list now has five entries, and `dht.transmissionbt.com` answered in the same test. |
 | `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; the first few relayed packets, the first few received ones (forwarded to the DHT node or not) and the moment the DHT node attaches are logged. Added to find out why a phone's DHT pings got no answer. |
+| `0013` udht: library mode with setup, stop and status | `udht_setup()`, `udht_stop()` and `udht_status()` behind the daemon's `main()`, so unetd and the DHT node share one uloop in one process. Losing unetd arms a reconnect timer instead of ending a loop that is not the node's to end; `udht_stop()` frees what a second setup would otherwise inherit. |
+| `0014` udht: never block on the relay sockets | Both ends of the relay were blocking UNIX datagram sockets. With the node on unetd's thread, a blocking send on a full queue would have had nobody left to drain it. unetd's end already handled `EAGAIN`; now it sees it. |
 
 ### wireguard-go without patches
 
@@ -320,7 +334,15 @@ not in unetd).
 - **uloop is a process-wide singleton** and `uloop_init()` — not `uloop_run()` —
   installs SIGINT/SIGTERM/SIGCHLD handlers. `uloop_end()` is a plain store that
   does not wake `epoll_wait`, so cross-thread shutdown needs its own eventfd.
-  unetd and unet-dht therefore cannot share a process.
+  Two loops in one process are impossible; one shared loop is not, and that is
+  how unet-dht runs here (it is entirely uloop-driven). What it must never do
+  on that loop is `uloop_end()` or `uloop_done()` of its own accord, or block
+  on the relay socket: patches 0013 and 0014.
+- **unetd's event loop blocks on DNS.** `getaddrinfo()` for gateways, STUN
+  servers and bootstrap routers runs on the loop, seconds to minutes when the
+  network is unusable. The facade therefore never waits on the loop to answer a
+  status request (it reads a snapshot), bounds the commands that do run there,
+  and the tun is closed before unetd is stopped.
 
 ## What the host tests prove
 
@@ -329,7 +351,7 @@ not in unetd).
 | M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
 | M1 `tests/dht/nat-testbed.sh` | **DHT discovery with both ends behind NAT**, the topology this app is for. Five network namespaces: a gateway and a phone, each behind its own port-preserving MASQUERADE router with unsolicited WAN input dropped, and an "internet" between them running a private DHT of ten nodes (`tests/dht/dhtnode.c`, on unetd's own `dht.c`). The phone knows only its key and the network's public key. It must find the gateway's external address through the DHT, fetch the signed data over the global PEX socket through both NATs, learn the WireGuard endpoint from PEX, and get a UDP echo back through the tunnel. Passes in about two minutes; the DHT bootstrap is most of it. |
 | M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
-| M1b `tests/host/m1b-dht-relay.sh` | The same wrapper **relays unet-dht**. unet-dht owns no UDP socket: it hands every DHT packet to unetd over the control socket, unetd sends it from the global PEX socket and feeds the reply back through a passed socketpair. The app runs exactly this across its two processes. A ping from unet-dht to a private DHT node on a loopback alias must come back as a pong through the wrapper, and core-test must still finish both of its rounds with the control socket open. |
+| M1b `tests/host/m1b-dht-relay.sh` | The same wrapper **runs unet-dht on its loop and relays it**. unet-dht owns no UDP socket: it hands every DHT packet to unetd over the control socket, unetd sends it from the global PEX socket and feeds the reply back through a passed socketpair. The app runs exactly this. In both of core-test's rounds the node is started, must get a pong from a private DHT node on a loopback alias, must show up in the status snapshot, and is stopped again; the second round proves the restart. |
 
 ## The emulator test
 
@@ -350,7 +372,7 @@ same app-op the dialog sets: `adb shell appops set org.unetd.android ACTIVATE_VP
 
 CI runs the four tests twice (`tests/emulator/run-tests.sh`, then again with
 `USE_DHT=1`). In the second pass the saved config has **no gateway**; the app
-starts unet-dht in its `:dht` process, bootstrapped from ten private DHT nodes
+starts unet-dht on unetd's loop, bootstrapped from ten private DHT nodes
 on the runner (`tests/dht/dhtnode.c`, listening on `10.0.2.2`, the emulator's
 name for its host), where the router announces the network with its own
 unet-dht. `t3` then proves the whole discovery chain inside the app: DHT lookup,
@@ -361,10 +383,11 @@ The `-b` bootstrap option (patch 0011) and the "DHT bootstrap nodes" field under
 
 On a phone, the Log screen is the equivalent of this job's logcat: it carries
 the build, the always-on and lockdown state, every `protect()` result, the
-`tun:` line, the netdiag block (routes, DNS, HTTPS, raw TCP, and UDP probes: a
-DNS query to 8.8.8.8 and a DHT ping to the three public bootstrap routers, each
-from a plain socket and from a `protect()`ed one), the first DHT packets relayed
-and received, and the DHT process's own log. The host-tests workflow also pings
+`tun:` line, with the verbose toggle the netdiag block (routes, DNS, HTTPS, raw
+TCP, and UDP probes: a DNS query to 8.8.8.8 and a DHT ping to the five public
+bootstrap routers, each from a plain socket and from a `protect()`ed one), the
+first DHT packets relayed and received, and the DHT node's own lines, all in
+one ring in the order they happened. The host-tests workflow also pings
 the public bootstrap routers with unet-dht from the runner, informationally, so
 a phone's missing pong can be compared with a plain host.
 
@@ -391,15 +414,19 @@ What the app does while connected, and what it deliberately does not:
   here and a peer is connected, and again after a minute without a connected
   peer. While a peer is up it would only keep the radio busy, since unet-dht
   restarts its search as soon as one finishes, maintains its routing table,
-  and the announced port draws traffic from the whole DHT.
-- **Verbose logging is off by default.** unetd's trace, wireguard-go's log and
-  the DHT chatter cost CPU and storage all day; the Setup toggle brings them
-  back for diagnosis. What the Log screen shows without it: the build line,
-  protect() results, the tun line, the netdiag block, the DHT relay lines and
-  the DHT node's start/stop.
-- **Polling follows the screen**: unetd's status is read once a second while
-  the app is visible and every 30 s otherwise, with an interface update waking
-  the poll early; the UI's own refresh loops stop when the activity stops.
+  and the announced port draws traffic from the whole DHT. The decision is
+  made on unetd's peer events and when the grace period runs out, not on a
+  timer tick.
+- **Verbose logging is off by default.** unetd's trace, wireguard-go's log,
+  the DHT chatter and the netdiag probes cost CPU, storage and radio all day;
+  the Setup toggle brings them back for diagnosis. What the Log screen shows
+  without it: the build line, protect() results, the tun line, the DHT relay
+  lines and the DHT node's start/stop.
+- **No polling in the background.** unetd reports peer up/down, network
+  reloads and STUN results as events, and each one refreshes the UI state and
+  the notification from a status snapshot the loop keeps current. Only the
+  counters (bytes, handshake age) are polled, once a second, and only while an
+  activity of the app is started.
 
 Still on unetd's side and untouched: its peer-exchange timer re-arms every
 500 ms whether or not it has hosts to talk to, and STUN refreshes every
@@ -415,8 +442,8 @@ saw, both search, and each sends to the other's outside address, which opens
 the mappings. That needs three things, and the app's Log screen tells you about
 two of them:
 
-- Both DHT nodes alive. The phone's shows up as `Node: <address>` in its DHT
-  log; the gateway's needs `unet-dht -d` on the router.
+- Both DHT nodes alive. The phone's progress is on the home screen and as
+  `Node: <address>` in the Log; the gateway's needs `unet-dht -d` on the router.
 - Endpoint-independent mappings on both NATs. The `nat (plain)` and
   `nat (protected)` lines in the netdiag block classify the phone's NAT by
   asking two STUN servers from one socket. For the CGNAT, configure two
@@ -480,16 +507,18 @@ mapping then loses its source port; with both sides doing that at once,
 nothing ever connects. Routers with a normal WAN firewall do not have this
 problem.
 
-The DHT node in the app's own `:dht` process is verified on the emulator too:
-the second emulator pass configures no gateway, and the app finds the router
-through a private DHT on the runner (see "The emulator test").
+The DHT node on unetd's loop is verified on the emulator too: the second
+emulator pass configures no gateway, and the app finds the router through a
+private DHT on the runner (see "The emulator test"); and on the host by M1b,
+twice in one process.
 
 Verified on a real network on 2 October 2026: DHT discovery against the
 public BitTorrent DHT and the full tunnel between a phone on 5G and an OpenWrt
 router, both behind NAT, no forwarded ports (see "Behind carrier-grade NAT").
 STUN is verified on the emulator (an outside port learned from a public server).
 
-Not verified anywhere yet: Doze
-and roaming on a phone, and GrapheneOS specifics. The app has run on one physical
-device so far, where the VPN came up but the device's own VPN settings
-(always-on) were still being investigated.
+Not verified anywhere yet: Doze and roaming on a phone, always-on and lockdown
+on a phone (a refused `protect()` now ends the connection with a message
+instead of sending into the tunnel), GrapheneOS specifics, and NAT traversal
+without `CAP_NET_RAW` in an automated test (the NAT testbed runs as root; the
+phone's no-raw-socket path is verified only by the real-network run above).
