@@ -321,7 +321,7 @@ app's. Four ordered tests:
 | `t1_baselineInternet` | DNS and HTTP work before any VPN. |
 | `t2_splitTunnelKeepsInternet` | With the VPN up on the placeholder tun (no routes yet), the internet still works. Android blocks a whole address family for a VPN that adds nothing of that family, which the service counters with `allowFamily`; this is the regression test. |
 | `t3_tunnelCarriesTraffic` | unetd fetched the signed data from the router on the runner, the tunnel re-established with the real addresses, WireGuard handshook, and HTTP to the router's in-tunnel address answers through it. |
-| `t3b_stunLearnsExternalPort` | The signed data carries two public STUN servers; unetd queries them and learns an outside port, which the status and the home screen show. On Android it is the peer-exchange port's mapping, since probing the WireGuard port needs a raw socket. |
+| `t3b_stunLearnsExternalPort` | The signed data carries a STUN server; unetd queries it and learns an outside port, which the status and the home screen show. The server runs on the runner (`tests/emulator/stun-server.py`): a public one would report the runner's NAT, which means nothing on the `10.0.2.2` path, and unetd offers STUN-learned ports to the other side as endpoints, which made the tunnel flap. Without raw sockets unetd briefly takes the WireGuard port over itself for the query, so the result is the real data port's mapping. |
 | `t4_disconnectRemovesVpn` | Disconnecting in the app takes the VPN down and leaves the internet working. |
 
 The VPN consent dialog cannot be clicked on a headless emulator; CI grants the

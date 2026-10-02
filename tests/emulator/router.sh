@@ -76,6 +76,14 @@ if [ -x "$DHTNODE" ]; then
 	echo $! > udp-proxy.pid
 fi
 
+# ---- a STUN server on this machine --------------------------------------------
+# Both ends of this test sit behind the runner's NAT; a public STUN server
+# would report outside ports that mean nothing on the 10.0.2.2 <-> emulator
+# path, and unetd would offer them to the other side as endpoints. This one
+# reports what it sees, which is the truth here (see stun-server.py).
+python3 "$SCRIPT_DIR/stun-server.py" 0.0.0.0 3478 > stun-server.log 2>&1 &
+echo $! > stun-server.pid
+
 # ---- the network ----------------------------------------------------------
 # Layer 3 only: no services, no tunnels. No peer-exchange-port and no STUN,
 # matching what the app ships as a conservative v1.
@@ -84,7 +92,7 @@ cat > "$NET.json" <<JSON
 	"config": {
 		"port": $PORT,
 		"keepalive": 10,
-		"stun-servers": [ "stun.l.google.com:19302", "stun.cloudflare.com:3478" ]
+		"stun-servers": [ "$ROUTER_ENDPOINT:3478" ]
 	},
 	"hosts": {
 		"router": {
