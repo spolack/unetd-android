@@ -309,10 +309,26 @@ private fun peerDetail(peer: Peer): String = when {
     peer.link == PeerLink.ViaGateway ->
         "via gateway · ↓ ${formatBytes(peer.rxBytes)} ↑ ${formatBytes(peer.txBytes)}"
     else -> buildString {
-        append(peer.lastHandshakeSec?.let { "handshake ${it}s ago" } ?: "no handshake yet")
+        append(formatHandshake(peer.lastHandshakeSec))
         append(" · ↓ ${formatBytes(peer.rxBytes)} ↑ ${formatBytes(peer.txBytes)}")
         peer.endpoint?.let { append(" · $it") }
     }
+}
+
+/**
+ * [sec] is unetd's age of the last handshake. A freshly re-created peer (after a
+ * roam, say) has no handshake recorded in wireguard-go yet, and unetd then
+ * reports the age as the current epoch; show that as pending rather than "56
+ * years ago".
+ */
+private fun formatHandshake(sec: Long?): String = when {
+    sec == null -> "no handshake yet"
+    sec > 10L * 365 * 24 * 3600 -> "handshake pending"
+    sec < 2 -> "handshake just now"
+    sec < 60 -> "handshake ${sec}s ago"
+    sec < 3600 -> "handshake ${sec / 60}m ago"
+    sec < 86400 -> "handshake ${sec / 3600}h ago"
+    else -> "handshake ${sec / 86400}d ago"
 }
 
 @Composable
