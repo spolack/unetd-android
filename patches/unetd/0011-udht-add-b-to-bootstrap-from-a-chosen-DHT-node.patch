@@ -9,14 +9,19 @@ unet-dht untestable without internet access and unusable in a private DHT.
 The list is cleared at the start of udht_main() so a repeated call from an
 embedder does not accumulate the same nodes.
 
+The default list also grows from two hosts to five (dht.transmissionbt.com,
+router.bitcomet.com and dht.aelitis.com added): with only the two BitTorrent
+Inc. routers, a day on which neither answers leaves every node unable to
+bootstrap, which is what a CI host and a phone both saw.
+
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PVGaNeNhqp11rTLwZ9rM4J
 ---
- udht.c | 53 ++++++++++++++++++++++++++++++++++++++++++-----------
- 1 file changed, 42 insertions(+), 11 deletions(-)
+ udht.c | 56 +++++++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 45 insertions(+), 11 deletions(-)
 
 diff --git a/udht.c b/udht.c
-index 32313f6..a275c2b 100644
+index 32313f6..70b9237 100644
 --- a/udht.c
 +++ b/udht.c
 @@ -363,7 +363,11 @@ static void udht_add_peer(const void *data, int len)
@@ -32,7 +37,7 @@ index 32313f6..a275c2b 100644
  {
  	const struct addrinfo hints = {
  		.ai_family = AF_INET,
-@@ -371,21 +375,41 @@ static void udht_add_bootstrap_peer(void)
+@@ -371,21 +375,44 @@ static void udht_add_bootstrap_peer(void)
  		.ai_flags = AI_ADDRCONFIG,
  	};
  	struct addrinfo *res, *cur;
@@ -69,6 +74,9 @@ index 32313f6..a275c2b 100644
 +	static const char * const bootstrap_hosts[] = {
 +		"router.bittorrent.com:6881",
 +		"router.utorrent.com:6881",
++		"dht.transmissionbt.com:6881",
++		"router.bitcomet.com:6881",
++		"dht.aelitis.com:6881",
 +	};
 +	int i;
 +
@@ -83,7 +91,7 @@ index 32313f6..a275c2b 100644
  
  	state.bootstrap_added = true;
  }
-@@ -585,6 +609,8 @@ static int usage(const char *progname)
+@@ -585,6 +612,8 @@ static int usage(const char *progname)
  {
  	fprintf(stderr, "Usage: %s [<options>] -u <socket> <id string>\n"
  		"Options:\n"
@@ -92,7 +100,7 @@ index 32313f6..a275c2b 100644
  		"	-d			Enable debug mode\n"
  		"	-n <file>		Set node filename\n"
  		"	-N <key>		Add network key\n"
-@@ -662,8 +688,13 @@ int udht_main(int argc, char **argv)
+@@ -662,8 +691,13 @@ int udht_main(int argc, char **argv)
  
  	/* An embedder may call this again after it returned: start getopt over. */
  	optind = 1;

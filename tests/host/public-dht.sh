@@ -15,6 +15,30 @@ trap cleanup EXIT
 : > "$RUNDIR/pids"
 mkdir -p "$RUNDIR/data"
 
+# First an independent probe: a minimal BEP 5 ping from Python to the
+# well-known bootstrap routers, so "the routers are down" and "they do not
+# answer unet-dht" can be told apart.
+python3 - <<'PY'
+import os, socket
+routers = ["router.bittorrent.com", "router.utorrent.com", "dht.transmissionbt.com",
+           "router.bitcomet.com", "dht.aelitis.com"]
+for h in routers:
+    try:
+        ip = socket.gethostbyname(h)
+    except OSError as e:
+        print(f"  {h}: DNS failed: {e}"); continue
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+    ping = b"d1:ad2:id20:" + os.urandom(20) + b"e1:q4:ping1:t2:aa1:y1:qe"
+    try:
+        s.sendto(ping, (ip, 6881)); d, a = s.recvfrom(1500)
+        print(f"  {h} ({ip}): reply {len(d)} bytes")
+    except socket.timeout:
+        print(f"  {h} ({ip}): NO REPLY in 4 s")
+    except OSError as e:
+        print(f"  {h} ({ip}): {e}")
+    s.close()
+PY
+
 "$HOST/unetd/unetd" -d -D "$RUNDIR/data" -u "$RUNDIR/unetd.sock" > "$RUNDIR/unetd.log" 2>&1 &
 echo $! >> "$RUNDIR/pids"
 i=0; while [ ! -S "$RUNDIR/unetd.sock" ]; do i=$((i + 1)); [ "$i" -gt 50 ] && { cat "$RUNDIR/unetd.log"; exit 1; }; sleep 0.1; done
