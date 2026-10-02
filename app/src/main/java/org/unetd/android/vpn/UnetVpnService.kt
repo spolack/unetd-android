@@ -255,9 +255,11 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
     // ---- status ----------------------------------------------------------------
 
     /**
-     * Polls unetd's status once a second while the UI is visible and every
-     * 30 s otherwise (the notification only changes on state changes anyway).
-     * An interface update or the UI coming up wakes it early.
+     * Polls unetd's status every second while the tunnel is still settling or
+     * the UI is visible, and every 30 s once a peer is connected and nothing is
+     * watching (the notification only changes on state changes anyway). An
+     * interface update or the UI coming up wakes it early. Staying responsive
+     * until a peer connects keeps establishment quick and the status fresh.
      */
     private suspend fun pollStatus(name: String, dht: Boolean) {
         while (scope.isActive) {
@@ -276,7 +278,8 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
                     }
                 }
             }
-            val interval = if (TunnelRuntime.uiVisible.value) 1_000L else 30_000L
+            val settled = TunnelRuntime.status.value.let { it.state == TunnelState.Connected && it.peers.any { p -> p.connected } }
+            val interval = if (TunnelRuntime.uiVisible.value || !settled) 1_000L else 30_000L
             withTimeoutOrNull(interval) {
                 merge(TunnelRuntime.refresh, TunnelRuntime.uiVisible.drop(1).filter { it }.map { }).first()
             }
