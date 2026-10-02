@@ -79,9 +79,9 @@ object NetDiag {
         // bootstrap routers unet-dht uses (UDP/6881), each from a plain socket
         // and, when offered, from a protect()ed one like unetd's.
         udpProbe(out, "dns 8.8.8.8:53", "8.8.8.8", 53, dnsQuery(), null)
-        for (router in listOf("router.bittorrent.com", "router.utorrent.com", "dht.transmissionbt.com")) {
-            udpProbe(out, "dht $router:6881", router, 6881, dhtPing(), null)
-            if (protect != null) udpProbe(out, "dht $router:6881 protected", router, 6881, dhtPing(), protect)
+        for ((router, port) in listOf("router.bittorrent.com" to 6881, "router.utorrent.com" to 6881, "dht.transmissionbt.com" to 6881, "dht.libtorrent.org" to 25401, "dht.aelitis.com" to 6881)) {
+            udpProbe(out, "dht $router:$port", router, port, dhtPing(), null)
+            if (protect != null) udpProbe(out, "dht $router:$port protected", router, port, dhtPing(), protect)
         }
         AppLog.line(out.toString().trimEnd())
     }

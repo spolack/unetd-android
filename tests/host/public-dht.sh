@@ -20,9 +20,9 @@ mkdir -p "$RUNDIR/data"
 # answer unet-dht" can be told apart.
 python3 - <<'PY'
 import os, socket
-routers = ["router.bittorrent.com", "router.utorrent.com", "dht.transmissionbt.com",
-           "router.bitcomet.com", "dht.aelitis.com"]
-for h in routers:
+routers = [("router.bittorrent.com", 6881), ("router.utorrent.com", 6881), ("dht.transmissionbt.com", 6881),
+           ("dht.libtorrent.org", 25401), ("dht.aelitis.com", 6881)]
+for h, port in routers:
     try:
         ip = socket.gethostbyname(h)
     except OSError as e:
@@ -30,10 +30,10 @@ for h in routers:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
     ping = b"d1:ad2:id20:" + os.urandom(20) + b"e1:q4:ping1:t2:aa1:y1:qe"
     try:
-        s.sendto(ping, (ip, 6881)); d, a = s.recvfrom(1500)
-        print(f"  {h} ({ip}): reply {len(d)} bytes")
+        s.sendto(ping, (ip, port)); d, a = s.recvfrom(1500)
+        print(f"  {h}:{port} ({ip}): reply {len(d)} bytes")
     except socket.timeout:
-        print(f"  {h} ({ip}): NO REPLY in 4 s")
+        print(f"  {h}:{port} ({ip}): NO REPLY in 4 s")
     except OSError as e:
         print(f"  {h} ({ip}): {e}")
     s.close()
