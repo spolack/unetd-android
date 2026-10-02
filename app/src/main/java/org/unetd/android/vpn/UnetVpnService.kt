@@ -108,7 +108,10 @@ class UnetVpnService : VpnService(), Unetd.Callbacks {
         Unetd.startLogCapture()
         // First line of every connection in the Log screen: which build this is.
         Log.i(TAG, "unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) starting; wireguard-go ${WgGo.wgVersion()}")
-        AppLog.line("unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) connecting")
+        AppLog.line(
+            "unetd-android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) connecting; " +
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "always-on=$isAlwaysOn lockdown=$isLockdownEnabled" else "",
+        )
         TunnelRuntime.set(TunnelRuntime.empty.copy(name = cfg.effectiveName(), state = TunnelState.Connecting))
 
         val tun = ConfigStore.loadLastTun(this) ?: TunSettings.placeholder()

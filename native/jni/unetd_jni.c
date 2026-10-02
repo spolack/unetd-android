@@ -62,8 +62,10 @@ static void cb_protect_socket(void *priv, int fd)
 
 	if (!env || !callbacks)
 		return;
-	if (!(*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd))
-		fprintf(stderr, "unetd: VpnService.protect(%d) refused\n", fd);
+	/* One line per socket, success included: on a phone with always-on and
+	 * lockdown, every byte depends on this having worked. */
+	fprintf(stderr, "unetd: VpnService.protect(%d) -> %s\n", fd,
+		(*env)->CallBooleanMethod(env, callbacks, m_protect, (jint)fd) ? "ok" : "REFUSED");
 	if ((*env)->ExceptionCheck(env)) {
 		(*env)->ExceptionClear(env);
 		fprintf(stderr, "unetd: VpnService.protect(%d) threw\n", fd);
@@ -202,6 +204,22 @@ Java_org_unetd_android_nativebridge_Unetd_nativeStatus(JNIEnv *env, jobject thiz
 	ret = (*env)->NewStringUTF(env, json);
 	free(json);
 	return ret;
+}
+
+/*
+ * A line from Java into the captured stderr. Java cannot write to fd 2 itself:
+ * Android's FileDescriptor.err is a dup made at process start, so it still
+ * points at the original stderr after the capture has replaced fd 2.
+ */
+JNIEXPORT void JNICALL
+Java_org_unetd_android_nativebridge_Unetd_nativeLog(JNIEnv *env, jobject thiz, jstring line)
+{
+	const char *s = line ? (*env)->GetStringUTFChars(env, line, NULL) : NULL;
+
+	if (!s)
+		return;
+	fprintf(stderr, "%s\n", s);
+	(*env)->ReleaseStringUTFChars(env, line, s);
 }
 
 JNIEXPORT void JNICALL

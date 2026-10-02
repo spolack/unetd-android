@@ -62,10 +62,9 @@ void wg_protect_fd(int fd)
 		(*env)->ExceptionClear(env);
 		ok = JNI_FALSE;
 	}
-	if (!ok) {
+	if (!ok)
 		__android_log_print(ANDROID_LOG_ERROR, "libwg-go", "protect(%d) failed", fd);
-		fprintf(stderr, "wg: VpnService.protect(%d) refused\n", fd);
-	}
+	fprintf(stderr, "wg: VpnService.protect(%d) -> %s\n", fd, ok ? "ok" : "REFUSED");
 
 	if (attached)
 		(*jvm)->DetachCurrentThread(jvm);

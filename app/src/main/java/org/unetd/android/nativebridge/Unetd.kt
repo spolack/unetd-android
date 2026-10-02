@@ -47,6 +47,8 @@ object Unetd {
 
     fun startLogCapture() = nativeStartLogCapture()
     fun logTail(maxLines: Int = 400): String = nativeLogTail(maxLines) ?: ""
+    /** One line into the captured stderr, i.e. into the Log screen. */
+    fun log(line: String) = nativeLog(line)
 
     /** A fresh Curve25519 key pair as (private, public), base64. */
     fun generateKey(): Pair<String, String>? =
@@ -65,6 +67,7 @@ object Unetd {
     private external fun nativeStatus(): String?
     private external fun nativeStartLogCapture()
     private external fun nativeLogTail(maxLines: Int): String?
+    private external fun nativeLog(line: String)
     private external fun nativeGenerateKey(): Array<String>?
     private external fun nativePublicKey(privateKey: String): String?
 }

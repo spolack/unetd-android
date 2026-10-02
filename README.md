@@ -317,6 +317,11 @@ four minutes for the peer, since bootstrapping alone takes about a minute.
 The `-b` bootstrap option (patch 0011) and the "DHT bootstrap nodes" field under
 *Advanced* in the setup screen exist for this; empty means the public routers.
 
+On a phone, the Log screen is the equivalent of this job's logcat: it carries
+the build, the always-on and lockdown state, every `protect()` result, the
+`tun:` line, the netdiag block, the first DHT packets relayed and forwarded,
+and the DHT process's own log.
+
 One emulator detail cost a run: QEMU's user-mode NAT delivers the guest's
 packets to the host from **127.0.0.1**, and a DHT node drops anything from
 127.0.0.0/8 as a martian source (`is_martian()` in dht.c), silently. The DHT
