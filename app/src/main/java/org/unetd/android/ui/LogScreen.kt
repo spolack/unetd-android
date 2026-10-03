@@ -93,4 +93,4 @@ fun LogScreen(readSince: (Long, Int) -> Pair<Long, List<String>>, onBack: () -> 
 }
 
 private const val BATCH = 500
-private const val KEEP = 2000
+private const val KEEP = 5000

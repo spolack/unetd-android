@@ -14,7 +14,7 @@
 
 #include "unetd_log.h"
 
-#define RING_LINES	2048
+#define RING_LINES	8192
 #define LINE_MAX_LEN	2048
 
 struct line {

@@ -80,9 +80,16 @@ func turnOn(socketDir, uapiName string, tunFd int32) int32 {
 	logger.Verbosef("attached to %s, serving UAPI as %s/%s.sock", kernelName, socketDir, uapiName)
 
 	dev := device.NewDevice(tunDev, newProtectedBind(conn.NewStdNetBind(), protectFd), logger)
-	// Peers whose endpoint unetd sets must not roam away from it; unetd owns
-	// the endpoint candidates on the phone (see the design review, F15).
-	dev.DisableSomeRoamingForBrokenMobileSemantics()
+	// Roaming stays on, as in the kernel: a peer's endpoint follows the source
+	// of its authenticated packets. unetd was written against that: it polls
+	// the endpoint back (wg-user.c, "endpoint") to notice a peer whose NAT
+	// mapping differs from what STUN or peer exchange announced, and tells the
+	// other peers. The WireGuard app's DisableSomeRoamingForBrokenMobileSemantics
+	// would pin every UAPI-set endpoint, so a handshake initiation arriving
+	// from a different port than the announced one would be answered to the
+	// announced port and die in the peer's NAT. unetd rewrites the endpoint
+	// once a second while a peer is down anyway, which bounds the damage a
+	// wrong roam could do.
 
 	// unetd needs this socket; without it there is nothing to drive, so unlike
 	// the WireGuard app a failure here is fatal rather than logged and ignored.

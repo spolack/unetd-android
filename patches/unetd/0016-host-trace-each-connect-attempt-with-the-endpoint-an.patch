@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 03:27:42 +0000
+Subject: [PATCH] host: trace each connect attempt with the endpoint and its
+ origin
+
+network_hosts_connect_cb() rotates through up to four endpoint candidates
+per peer, one per second, and hands each to the WireGuard backend. Nothing
+told which address was tried, so a peer that never answers could not be told
+apart from a peer whose address unetd never had: the backend's own log (the
+kernel has none, wireguard-go prints "Updating endpoint" without the value)
+does not help. Log the address, the port and the slot it came from under -d.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019FGFD5nZ9AL3AdMi7SfYSg
+---
+ host.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/host.c b/host.c
+index 9d8d518..0305822 100644
+--- a/host.c
++++ b/host.c
+@@ -2,6 +2,7 @@
+ /*
+  * Copyright (C) 2022 Felix Fietkau <nbd@nbd.name>
+  */
++#include <arpa/inet.h>
+ #include <libubox/avl-cmp.h>
+ #include <libubox/blobmsg_json.h>
+ #include "unetd.h"
+@@ -483,6 +484,13 @@ void network_hosts_update_done(struct network *net)
+ 	return __network_hosts_update_done(net, false);
+ }
+ 
++static const char * const endpoint_type_names[__ENDPOINT_TYPE_MAX] = {
++	[ENDPOINT_TYPE_STATIC] = "static",
++	[ENDPOINT_TYPE_PEX] = "pex",
++	[ENDPOINT_TYPE_ENDPOINT_NOTIFY] = "endpoint-notify",
++	[ENDPOINT_TYPE_ENDPOINT_PORT_NOTIFY] = "port-notify",
++};
++
+ static union network_endpoint *
+ network_peer_next_endpoint(struct network_peer *peer)
+ {
+@@ -519,6 +527,7 @@ network_hosts_connect_cb(struct uloop_timeout *t)
+ 	struct network_host *host;
+ 	struct network_peer *peer;
+ 	union network_endpoint *ep;
++	char addrstr[INET6_ADDRSTRLEN];
+ 
+ 	avl_for_each_element(&net->hosts, host, node)
+ 		host->peer.state.num_net_queries = 0;
+@@ -540,6 +549,14 @@ network_hosts_connect_cb(struct uloop_timeout *t)
+ 		if (!ep)
+ 			continue;
+ 
++		D_PEER(net, peer, "connect attempt via %s:%d (%s)",
++		       inet_ntop(ep->sa.sa_family, network_endpoint_addr(ep, NULL),
++				 addrstr, sizeof(addrstr)),
++		       ntohs(ep->in.sin_port),
++		       endpoint_type_names[peer->state.next_endpoint_idx ?
++					   peer->state.next_endpoint_idx - 1 :
++					   __ENDPOINT_TYPE_MAX - 1]);
++
+ 		if (memcmp(ep, &peer->state.endpoint, sizeof(*ep)) != 0 &&
+ 		    !network_skip_endpoint_route(net, ep))
+ 			unetd_ubus_netifd_add_route(net, ep);
