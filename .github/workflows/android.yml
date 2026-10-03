@@ -19,9 +19,13 @@ jobs:
     env:
       UNETD_KEYSTORE_BASE64: ${{ secrets.UNETD_KEYSTORE_BASE64 }}
     steps:
+      # The full history: versionCode is the commit count (app/build.gradle.kts),
+      # and a shallow clone would make every build versionCode 1, which Android
+      # refuses to install over a locally built, higher-numbered APK.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 0
 
       # Latest GA JDK, per the repo policy. Gradle 9.8 is the first release that
       # runs on Java 27; the app still compiles to Java 17 bytecode.
