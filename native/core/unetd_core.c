@@ -123,6 +123,7 @@ static struct dht_args *dht_args_copy(const struct unetd_core_dht_config *cfg)
 		a->bootstrap[a->cfg.n_bootstrap++] = a->strings[n++] = strdup(cfg->bootstrap[i]);
 	a->cfg.debug = cfg->debug;
 	a->cfg.keep_running = true;
+	a->cfg.inproc = true;	/* relay by call: no socket pair, no datagram queue limit */
 	return a;
 }
 
@@ -343,10 +344,6 @@ static void cmd_fd_cb(struct uloop_fd *fd, unsigned int events)
 		cmd->ret = unetd_network_remove(cmd->arg);
 		break;
 	case CMD_DHT_START:
-		if (!core.unix_socket) {
-			cmd->ret = -ENOTSUP;
-			break;
-		}
 		cmd->dht->cfg.unix_path = core.unix_socket;
 		cmd->ret = udht_setup(&cmd->dht->cfg) < 0 ? -EIO : 0;
 		core.dht_running = cmd->ret == 0;

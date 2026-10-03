@@ -72,9 +72,9 @@ int unetd_core_network_add(const char *json);
 int unetd_core_network_remove(const char *name);
 
 /*
- * The DHT node (unet-dht) on the same loop. It owns no socket: it relays
- * through the global PEX socket over the control socket given at start
- * (unix_socket), so start() must have been given one. Restartable.
+ * The DHT node (unet-dht) on the same loop. It owns no socket: every packet
+ * goes through the global PEX socket by direct call, no socket pair in
+ * between. Restartable.
  */
 struct unetd_core_dht_config {
 	const char *id_string;		/* seeds the node id, e.g. the public key */

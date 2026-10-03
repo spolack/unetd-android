@@ -7,8 +7,8 @@
 # one end of a socketpair over it, and from then on hands every DHT packet to
 # unetd, which sends it from the global PEX socket and feeds replies back
 # through the socketpair. The Android app runs exactly this, in one process:
-# the DHT node on unetd's uloop (patch 0013), the relay sockets non-blocking
-# (patch 0014). The NAT testbed (M1) checks the relay with the unetd and
+# the DHT node on unetd's uloop (patch 0013), relayed by direct calls through
+# the global PEX socket (patch 0015). The NAT testbed (M1) checks the socket relay with the unetd and
 # unet-dht *binaries*; this checks it with the wrapper, which core-test
 # drives: in both of its rounds it starts the node, waits for the pong, reads
 # the node's progress from the status snapshot and stops it again.

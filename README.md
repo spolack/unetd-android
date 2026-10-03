@@ -149,9 +149,9 @@ the first place to look when something does not connect.
   by the system; the controller notices and stops or refuses accordingly.
 - unet-dht runs **on unetd's uloop** (patch 0013), started and stopped by the
   controller while no peer is connected. It has no socket of its own and
-  relays through unetd's global PEX socket over a unix socket in the app's
-  data dir, so it needs no `protect()`; both relay sockets are non-blocking
-  (patch 0014), since one thread cannot wait on itself.
+  sends and receives through unetd's global PEX socket by direct call (patch
+  0015), so it needs no `protect()` and no socket pair whose kernel queue
+  could overflow while one thread serves both sides.
 - `nativebridge/` holds the two JNI objects: `Unetd` (the library wrapper in
   `native/core`, DHT included) and `WgGo` (wireguard-go).
 - The UI talks to a `UnetRepository`; `NativeUnetRepository` reads the
@@ -231,7 +231,7 @@ native/CMakeLists.txt       the native build, for the NDK and for the host
 native/core/                unetd (+ unet-dht) as a library: uloop thread, commands, status snapshot, events, log ring
 native/jni/                 JNI binding for the library
 native/libwg-go/            wireguard-go embedding: bind wrapper, UAPI listener, JNI glue (Go, c-shared)
-patches/unetd/              ordered, individually upstreamable patch series (14)
+patches/unetd/              ordered, individually upstreamable patch series (15)
 third_party/unetd           submodule, pinned to 7c3213d (upstream HEAD)
 third_party/libubox         submodule (upstream HEAD)
 third_party/json-c          submodule, json-c-0.19-20260627
@@ -270,6 +270,7 @@ needs from it goes through public interfaces (see below).
 | `0012` pex: diagnostics for the DHT relay | unet-dht's packets travel through unetd's global PEX socket, and that relay was silent: a failed `sendto()` was invisible, and so was a reply that was or was not forwarded. Failures are reported with the address and errno; the first few relayed packets, the first few received ones (forwarded to the DHT node or not) and the moment the DHT node attaches are logged. Added to find out why a phone's DHT pings got no answer. |
 | `0013` udht: library mode with setup, stop and status | `udht_setup()`, `udht_stop()` and `udht_status()` behind the daemon's `main()`, so unetd and the DHT node share one uloop in one process. Losing unetd arms a reconnect timer instead of ending a loop that is not the node's to end; `udht_stop()` frees what a second setup would otherwise inherit. |
 | `0014` udht: never block on the relay sockets | Both ends of the relay were blocking UNIX datagram sockets. With the node on unetd's thread, a blocking send on a full queue would have had nobody left to drain it. unetd's end already handled `EAGAIN`; now it sees it. |
+| `0015` udht: relay by direct calls when running inside unetd | A non-blocking socket pair on one thread is still a kernel queue of `net.unix.max_dgram_qlen` (10) datagrams that nobody drains mid-burst, so the eleventh DHT reply of a burst was lost. In one process the global PEX socket hands received datagrams to the node by call and the node sends through it by call; no socket pair at all. The daemon keeps the socket path. |
 
 ### wireguard-go without patches
 
@@ -336,8 +337,9 @@ not in unetd).
   does not wake `epoll_wait`, so cross-thread shutdown needs its own eventfd.
   Two loops in one process are impossible; one shared loop is not, and that is
   how unet-dht runs here (it is entirely uloop-driven). What it must never do
-  on that loop is `uloop_end()` or `uloop_done()` of its own accord, or block
-  on the relay socket: patches 0013 and 0014.
+  on that loop is `uloop_end()` or `uloop_done()` of its own accord, or rely
+  on a kernel queue between itself and unetd that only it would drain:
+  patches 0013 to 0015.
 - **unetd's event loop blocks on DNS.** `getaddrinfo()` for gateways, STUN
   servers and bootstrap routers runs on the loop, seconds to minutes when the
   network is unusable. The facade therefore never waits on the loop to answer a
@@ -351,7 +353,7 @@ not in unetd).
 | M0 `tests/host/m0-uapi-hinge.sh` | unetd, built in the Android configuration, configures wireguard-go entirely over the UAPI socket: private key, peers, AllowedIPs, one `/64` for every derived address. Run twice in CI, the second time with `CAP_NET_RAW` dropped. |
 | M1 `tests/dht/nat-testbed.sh` | **DHT discovery with both ends behind NAT**, the topology this app is for. Five network namespaces: a gateway and a phone, each behind its own port-preserving MASQUERADE router with unsolicited WAN input dropped, and an "internet" between them running a private DHT of ten nodes (`tests/dht/dhtnode.c`, on unetd's own `dht.c`). The phone knows only its key and the network's public key. It must find the gateway's external address through the DHT, fetch the signed data over the global PEX socket through both NATs, learn the WireGuard endpoint from PEX, and get a UDP echo back through the tunnel. Passes in about two minutes; the DHT bootstrap is most of it. |
 | M1a `tests/host/m1-core.sh` | The library wrapper the app uses (`native/core`), driven the way `UnetVpnService` drives it: start, add network, status JSON with peers, interface-update callback with the `/64` and the IPv4 routes, `protect()` offered for the global PEX socket, remove, stop — **twice in one process**, because the app connects and disconnects without restarting. |
-| M1b `tests/host/m1b-dht-relay.sh` | The same wrapper **runs unet-dht on its loop and relays it**. unet-dht owns no UDP socket: it hands every DHT packet to unetd over the control socket, unetd sends it from the global PEX socket and feeds the reply back through a passed socketpair. The app runs exactly this. In both of core-test's rounds the node is started, must get a pong from a private DHT node on a loopback alias, must show up in the status snapshot, and is stopped again; the second round proves the restart. |
+| M1b `tests/host/m1b-dht-relay.sh` | The same wrapper **runs unet-dht on its loop and relays it**. unet-dht owns no UDP socket: every DHT packet goes out through unetd's global PEX socket and every reply comes back to the node by direct call. The app runs exactly this. In both of core-test's rounds the node is started, must get a pong from a private DHT node on a loopback alias, must show up in the status snapshot, and is stopped again; the second round proves the restart. |
 
 ## The emulator test
 

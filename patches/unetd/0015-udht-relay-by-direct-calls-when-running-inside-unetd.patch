@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <spolack+claude@mailbox.org>
+Date: Sat, 3 Oct 2026 02:47:41 +0000
+Subject: [PATCH] udht: relay by direct calls when running inside unetd
+
+With unetd and the DHT node on one thread, the socket pair between them is a
+kernel datagram queue that nobody drains while the sender is still sending.
+Linux caps that queue at net.unix.max_dgram_qlen, ten datagrams by default,
+so a burst of more than ten DHT replies arriving in one go lost every reply
+past the tenth, silently. In two processes the sender simply blocked until
+the other side caught up, which is why the daemon never saw this.
+
+In the same process no socket is needed: the global PEX socket hands every
+received datagram to the node by call (pex_inproc_relay), the node sends
+through that socket by call (pex_relay_sendto) and reports found peers by
+call too (pex_relay_control). The control socket and the socket pair stay
+the path for unet-dht as its own daemon.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019FGFD5nZ9AL3AdMi7SfYSg
+---
+ pex-msg.c | 40 ++++++++++++++++++++++++++++++++++++++--
+ pex-msg.h | 14 ++++++++++++++
+ pex.c     |  1 +
+ udht.c    | 53 ++++++++++++++++++++++++++++++++++++++++++++++++++---
+ udht.h    |  6 ++++++
+ 5 files changed, 109 insertions(+), 5 deletions(-)
+
+diff --git a/pex-msg.c b/pex-msg.c
+index e0c2b7e..25da63a 100644
+--- a/pex-msg.c
++++ b/pex-msg.c
+@@ -33,6 +33,7 @@ static int pex_raw_v4_fd = -1, pex_raw_v6_fd = -1;
+ static pex_recv_cb_t pex_recv_cb;
+ static pex_recv_control_cb_t pex_control_cb;
+ static int pex_unix_tx_fd = -1;
++static const struct pex_inproc_relay *pex_inproc;
+ 
+ int pex_socket(void)
+ {
+@@ -275,12 +276,14 @@ pex_fd_cb(struct uloop_fd *fd, unsigned int events)
+ 			if (logged < 3 && ++logged)
+ 				fprintf(stderr, "pex: rx %d bytes from %s, %s (first %d logged)\n",
+ 					(int)len, pex_addr_str(&sin6, abuf, sizeof(abuf)),
+-					pex_unix_tx_fd >= 0 ? "forwarded to the DHT node" : "no DHT node attached",
++					(pex_inproc || pex_unix_tx_fd >= 0) ? "forwarded to the DHT node" : "no DHT node attached",
+ 					3);
+ 		}
+ 
+ retry:
+-		if (pex_unix_tx_fd >= 0) {
++		if (pex_inproc) {
++			pex_inproc->rx(buf, len, (struct sockaddr *)&sin6, slen);
++		} else if (pex_unix_tx_fd >= 0) {
+ 			iov[0].iov_len = slen;
+ 			iov[1].iov_len = len;
+ 			if (sendmsg(pex_unix_tx_fd, &msg, 0) < 0) {
+@@ -858,6 +861,39 @@ int pex_unix_open(const char *path, pex_recv_control_cb_t cb)
+ 	return 0;
+ }
+ 
++void pex_set_control_cb(pex_recv_control_cb_t cb)
++{
++	pex_control_cb = cb;
++}
++
++void pex_set_inproc_relay(const struct pex_inproc_relay *relay)
++{
++	pex_inproc = relay;
++}
++
++int pex_relay_sendto(const void *data, size_t len, const struct sockaddr *sa)
++{
++	const struct sockaddr *dst;
++	socklen_t dst_len;
++
++	if (pex_fd.fd < 0) {
++		errno = ENOTCONN;
++		return -1;
++	}
++	dst = pex_fd_sockaddr(sa, &dst_len);
++	if (!dst) {
++		errno = EAFNOSUPPORT;
++		return -1;
++	}
++	return sendto(pex_fd.fd, data, len, 0, dst, dst_len);
++}
++
++void pex_relay_control(struct pex_msg_local_control *msg, int len)
++{
++	if (pex_control_cb)
++		pex_control_cb(msg, len);
++}
++
+ void pex_close(void)
+ {
+ 	if (pex_raw_v4_fd >= 0)
+diff --git a/pex-msg.h b/pex-msg.h
+index 473d7ed..e1681a9 100644
+--- a/pex-msg.h
++++ b/pex-msg.h
+@@ -108,8 +108,22 @@ typedef void (*pex_recv_control_cb_t)(struct pex_msg_local_control *msg, int len
+ 
+ int pex_open(void *addr, size_t addr_len, pex_recv_cb_t cb, bool server);
+ int pex_unix_open(const char *path, pex_recv_control_cb_t cb);
++void pex_set_control_cb(pex_recv_control_cb_t cb);
+ void pex_close(void);
+ 
++/*
++ * A DHT node in the same process: it gets every datagram the global PEX
++ * socket receives by call, and sends through that socket by call. No socket
++ * pair in between, so no kernel datagram queue to overflow when both sides
++ * run on one thread.
++ */
++struct pex_inproc_relay {
++	void (*rx)(const void *data, size_t len, const struct sockaddr *sa, socklen_t slen);
++};
++void pex_set_inproc_relay(const struct pex_inproc_relay *relay);
++int pex_relay_sendto(const void *data, size_t len, const struct sockaddr *sa);
++void pex_relay_control(struct pex_msg_local_control *msg, int len);
++
+ int pex_socket(void);
+ int pex_raw_socket(int family);
+ uint64_t pex_network_hash(const uint8_t *auth_key, uint64_t req_id);
+diff --git a/pex.c b/pex.c
+index eb82668..35c7799 100644
+--- a/pex.c
++++ b/pex.c
+@@ -1169,6 +1169,7 @@ int global_pex_open(const char *unix_path)
+ 
+ 	ret = pex_open(&sin6, sizeof(sin6), global_pex_recv, true);
+ 
++	pex_set_control_cb(pex_recv_control);
+ 	if (unix_path)
+ 		pex_unix_open(unix_path, pex_recv_control);
+ 
+diff --git a/udht.c b/udht.c
+index cdb8a37..737360d 100644
+--- a/udht.c
++++ b/udht.c
+@@ -31,6 +31,7 @@ static char *unix_path;
+ static bool udht_connected;
+ static bool udht_running;	/* between udht_setup() and udht_stop() */
+ static bool udht_keep_running;	/* losing unetd: retry instead of ending the loop */
++static bool udht_inproc;	/* in unetd's process: relay by call, no sockets */
+ static unsigned int nodes_found;
+ static int prev_good, prev_dubious, prev_incoming;
+ 
+@@ -92,6 +93,9 @@ int dht_sendto(int sockfd, const void *buf, int len, int flags,
+ 	else
+ 		return -1;
+ 
++	if (udht_inproc)
++		return pex_relay_sendto(buf, len, to);
++
+ 	ret = sendmsg(sockfd, &msg, flags);
+ 	if (ret < 0) {
+ 		if (errno == EAGAIN || errno == ENOBUFS)
+@@ -176,7 +180,10 @@ udht_send_v4_node(const void *id, const void *data)
+ 	return;
+ 
+ found:
+-	send(dht_unix_fd, &msg, sizeof(msg), 0);
++	if (udht_inproc)
++		pex_relay_control(&msg.local, sizeof(msg.local));
++	else
++		send(dht_unix_fd, &msg, sizeof(msg), 0);
+ }
+ 
+ static void
+@@ -283,9 +290,33 @@ udht_fd_cb(struct uloop_fd *fd, unsigned int events)
+ 	}
+ }
+ 
++/* In-process: a datagram the global PEX socket received, handed over by call. */
++static void
++udht_inproc_rx(const void *data, size_t len, const struct sockaddr *sa, socklen_t slen)
++{
++	static char buf[PEX_RX_BUF_SIZE + 1];
++	time_t tosleep = 1;
++
++	if (!udht_connected || len > PEX_RX_BUF_SIZE)
++		return;
++	/* dht_periodic() wants the buffer NUL-terminated */
++	memcpy(buf, data, len);
++	buf[len] = 0;
++	dht_periodic(buf, len, sa, slen, &tosleep, udht_cb, NULL);
++	if (!tosleep)
++		tosleep = 1;
++	uloop_timeout_set(&periodic_timer, tosleep * 1000);
++}
++
++static const struct pex_inproc_relay udht_relay = {
++	.rx = udht_inproc_rx,
++};
++
+ static void
+ udht_close_socket(void)
+ {
++	if (udht_inproc)
++		pex_set_inproc_relay(NULL);
+ 	if (dht_fd.fd >= 0) {
+ 		uloop_fd_delete(&dht_fd);
+ 		close(dht_fd.fd);
+@@ -318,6 +349,20 @@ udht_open_socket(const char *unix_path)
+ 	int sfd[2];
+ 	int fd;
+ 
++	if (udht_inproc) {
++		/*
++		 * No relay socket at all: packets go by call both ways. dht.c
++		 * still wants a descriptor to hand to dht_sendto(), which ignores
++		 * it here; an unconnected datagram socket stands in.
++		 */
++		fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
++		if (fd < 0)
++			return -1;
++		dht_unix_fd = fd;
++		pex_set_inproc_relay(&udht_relay);
++		return 0;
++	}
++
+ 	/*
+ 	 * Neither end of the relay may block: unetd's pex_fd_cb() handles
+ 	 * EAGAIN on its end, and a full queue must drop a DHT packet rather
+@@ -737,6 +782,7 @@ void udht_stop(void)
+ 	prev_good = prev_dubious = prev_incoming = 0;
+ 	nodes_found = 0;
+ 	dht_debug = NULL;
++	udht_inproc = false;
+ 	udht_running = false;
+ }
+ 
+@@ -745,12 +791,13 @@ int udht_setup(const struct udht_config *cfg)
+ 	uint8_t auth_key[CURVE25519_KEY_SIZE];
+ 	int i;
+ 
+-	if (!cfg || !cfg->unix_path || !cfg->id_string)
++	if (!cfg || !cfg->id_string || (!cfg->unix_path && !cfg->inproc))
+ 		return -1;
+ 
+ 	udht_stop();	/* a second setup replaces the first */
+ 
+-	unix_path = strdup(cfg->unix_path);
++	udht_inproc = cfg->inproc;
++	unix_path = cfg->unix_path ? strdup(cfg->unix_path) : NULL;
+ 	node_file = cfg->node_file ? strdup(cfg->node_file) : NULL;
+ 	dht_debug = cfg->debug ? stderr : NULL;
+ 	udht_keep_running = cfg->keep_running;
+diff --git a/udht.h b/udht.h
+index 7fd28a9..20e703b 100644
+--- a/udht.h
++++ b/udht.h
+@@ -22,6 +22,12 @@ struct udht_config {
+ 	bool debug;
+ 	/* On losing unetd: keep retrying instead of ending the uloop. */
+ 	bool keep_running;
++	/*
++	 * The embedder is unetd itself: relay by direct calls through its global
++	 * PEX socket (pex_inproc_relay) instead of over the control socket, which
++	 * is then not needed.
++	 */
++	bool inproc;
+ };
+ 
+ /* Registers on the running uloop and connects to unetd. 0 on success. */
