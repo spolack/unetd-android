@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 11:55:05 +0000
+Subject: [PATCH] pex-stun: without a raw socket, refresh the data port while
+ no peer is up
+
+Without a raw socket the data port is measured once, by taking the port over
+from WireGuard before any peer connects, and never again: later rounds learn
+the auth port and stop. A NAT whose mapping has moved since then is never
+noticed, and the host keeps announcing a port nobody can reach.
+
+After each auth port refresh, take the port over again for the data query
+when no peer is connected. Nothing flows on the port then, and a peer that
+stays down may be down exactly because the announced port is stale. With a
+peer up the port is proven to work and the round ends as before. If the
+takeover socket cannot be opened, end the round rather than querying the
+auth port in a loop.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019FGFD5nZ9AL3AdMi7SfYSg
+---
+ pex-stun.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/pex-stun.c b/pex-stun.c
+index 05ceefa..594aa42 100644
+--- a/pex-stun.c
++++ b/pex-stun.c
+@@ -245,13 +245,22 @@ void network_stun_rx_packet(struct network *net, const void *data, size_t len)
+ 	/*
+ 	 * Learning the auth (PEX) port is only the first step towards the
+ 	 * WireGuard data port, which needs a raw socket to forge its source
+-	 * port. Without one (an unprivileged Android app) that second step is
+-	 * unreachable, so stop here instead of re-querying forever.
++	 * port. Without one (an unprivileged Android app) the only way to the
++	 * data port is to take it over from WireGuard for a moment, which is
++	 * acceptable while no peer is up (nothing is flowing, and a peer that
++	 * stays down may be down exactly because the port has moved). With a
++	 * peer up the port is known to work; stop instead of re-querying
++	 * forever.
+ 	 */
+-	if (s->req_auth_port && pex_raw_socket(AF_INET) >= 0)
++	if (s->req_auth_port && pex_raw_socket(AF_INET) >= 0) {
+ 		stun->state = STUN_STATE_STUN_QUERY_SEND;
+-	else
++	} else if (s->req_auth_port && !has_connected_peer(net, false)) {
++		network_stun_open_socket(net);
++		stun->state = stun->wgport_disabled ?
++			STUN_STATE_STUN_QUERY_SEND : STUN_STATE_IDLE;
++	} else {
+ 		stun->state = STUN_STATE_IDLE;
++	}
+ 
+ 	network_stun_query_clear_pending(net);
+ 

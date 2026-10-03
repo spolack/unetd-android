@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 3 Oct 2026 11:54:40 +0000
+Subject: [PATCH] pex-stun: re-learn the auth port at the start of every
+ refresh round
+
+The data port query is sent from the WireGuard port and asks the STUN server
+to reply to the auth (PEX) port instead, via RESPONSE-PORT, since WireGuard
+owns the data port's socket. Behind a NAT that reply only gets through while
+the mapping created by the auth port's own query still exists, which is for
+a minute or two of UDP conntrack lifetime. The auth port was queried once at
+start-up and never again, so every 15-minute refresh of the data port timed
+out and the first value stayed for the lifetime of the process.
+
+That hides a NAT whose mapping has moved. Seen with a gateway that itself
+bound UDP 51830 for its own WireGuard: once that socket existed, the
+masquerade gave the inner host's 51830 the external port 30827 for every
+destination, while unetd kept announcing 51830 from its first measurement.
+Peers connected to the announced port and reached the gateway's WireGuard,
+which did not know them; the inner host's own initiations left with source
+port 30827, which a port-restricted NAT on the other side had never seen.
+
+Start each refresh round with the auth query again, so the mapping exists
+right before the data query's reply needs it. The round costs one extra
+query per server every 15 minutes.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019FGFD5nZ9AL3AdMi7SfYSg
+---
+ pex-stun.c | 16 ++++++++++++++--
+ pex.h      |  2 ++
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/pex-stun.c b/pex-stun.c
+index 564ca71..05ceefa 100644
+--- a/pex-stun.c
++++ b/pex-stun.c
+@@ -145,7 +145,7 @@ network_stun_query_next(struct network *net)
+ 	if (ep.sa.sa_family != AF_INET || !ep.in.sin_port)
+ 		goto out;
+ 
+-	if (!stun->wgport_disabled && stun->auth_port_ext)
++	if (!stun->wgport_disabled && stun->auth_port_ext && !stun->auth_refresh)
+ 		res_port = stun->auth_port_ext;
+ 
+ 	D_NET(net, "Send STUN query to %s, res_port=%d, wg_disabled=%d",
+@@ -159,7 +159,8 @@ retry:
+ 	s->req_auth_port = false;
+ 	if (stun->wgport_disabled) {
+ 		ret = sendto(stun->socket.fd, msg, len, 0, &ep.sa, sizeof(ep.in));
+-	} else if (!stun->auth_port_ext || pex_raw_socket(AF_INET) < 0) {
++	} else if (!stun->auth_port_ext || stun->auth_refresh ||
++		   pex_raw_socket(AF_INET) < 0) {
+ 		/*
+ 		 * Without a raw socket the WireGuard source port cannot be
+ 		 * forged, so query from the PEX socket instead. That discovers
+@@ -239,6 +240,8 @@ void network_stun_rx_packet(struct network *net, const void *data, size_t len)
+ 		return;
+ 
+ 	network_stun_update_port(net, s->req_auth_port, s->req.port);
++	if (s->req_auth_port)
++		stun->auth_refresh = false;
+ 	/*
+ 	 * Learning the auth (PEX) port is only the first step towards the
+ 	 * WireGuard data port, which needs a raw socket to forge its source
+@@ -268,6 +271,15 @@ restart:
+ 		network_stun_close_socket(net);
+ 		next = 15 * 60 * 1000;
+ 		stun->state = STUN_STATE_STUN_QUERY_SEND;
++		/*
++		 * The data port query asks the server to reply to the auth
++		 * port (RESPONSE-PORT), so that reply can only pass a NAT while
++		 * the mapping from the auth port's own query still exists.
++		 * That is for a minute or two, not until the next round. Start
++		 * every round with the auth query again, which recreates the
++		 * mapping right before the data query needs it.
++		 */
++		stun->auth_refresh = true;
+ 		D_NET(net, "STUN idle");
+ 		break;
+ 	case STUN_STATE_PEX_QUERY_WAIT:
+diff --git a/pex.h b/pex.h
+index f0173a6..f1604a4 100644
+--- a/pex.h
++++ b/pex.h
+@@ -56,6 +56,8 @@ struct network_stun {
+ 
+ 	enum network_stun_state state;
+ 	bool wgport_disabled;
++	/* re-learn the auth port first in the next query round */
++	bool auth_refresh;
+ 
+ 	uint16_t auth_port_ext;
+ 	uint16_t port_local;

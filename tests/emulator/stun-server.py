@@ -28,12 +28,21 @@ def main(argv):
         if len(data) < 20 or data[0:2] != b"\x00\x01" or struct.unpack("!I", data[4:8])[0] != MAGIC:
             continue
         tid = data[8:20]
+        # RESPONSE-PORT (RFC 5780): unetd asks for the data port's mapping from
+        # a forged source port it cannot receive on, and wants the answer on
+        # its peer-exchange port instead.
+        reply_port, pos = port, 20
+        while pos + 4 <= len(data):
+            atype, alen = struct.unpack("!HH", data[pos:pos + 4])
+            if atype == 0x0027 and alen >= 2:
+                reply_port = struct.unpack("!H", data[pos + 4:pos + 6])[0]
+            pos += 4 + (alen + 3) // 4 * 4
         xport = port ^ (MAGIC >> 16)
         xip = struct.unpack("!I", socket.inet_aton(ip))[0] ^ MAGIC
         attr = struct.pack("!HHBBHI", 0x0020, 8, 0, 0x01, xport, xip)  # XOR-MAPPED-ADDRESS, IPv4
         resp = struct.pack("!HHI", 0x0101, len(attr), MAGIC) + tid + attr
-        s.sendto(resp, (ip, port))
-        print(f"stun-server: {ip}:{port} asked, answered {ip}:{port}", flush=True)
+        s.sendto(resp, (ip, reply_port))
+        print(f"stun-server: {ip}:{port} asked, answered {ip}:{port} to port {reply_port}", flush=True)
 
 
 if __name__ == "__main__":

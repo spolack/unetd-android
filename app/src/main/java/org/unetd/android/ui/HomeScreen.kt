@@ -259,8 +259,9 @@ private fun CapabilityCard(caps: Capabilities, dhtSummary: String?) {
                 Text(
                     "Raw sockets are unavailable to an app, so unetd cannot forge packets " +
                         "from the WireGuard port: it measures that port's NAT mapping by " +
-                        "taking the port over briefly before any peer connects, and WireGuard's " +
-                        "own handshakes do the hole punching. Expected, not a fault.",
+                        "taking the port over briefly, before any peer connects and again every " +
+                        "15 minutes while no peer is up, and WireGuard's own handshakes do the " +
+                        "hole punching. Expected, not a fault.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
